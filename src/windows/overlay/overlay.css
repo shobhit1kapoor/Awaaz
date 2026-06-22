@@ -1,0 +1,88 @@
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+  pointer-events: none;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.overlay-root {
+  width: 100vw;
+  height: 100vh;
+  background: transparent;
+}
+
+.cursor-cluster {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  transform: translate(-50%, -50%);
+}
+
+.blue-cursor {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: #2f7cff;
+  box-shadow: 0 0 24px rgba(47, 124, 255, 0.8);
+}
+
+.response-bubble {
+  max-width: 360px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  color: white;
+  background: rgba(16, 18, 24, 0.88);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.audio-waveform {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+}
+
+.audio-waveform span {
+  width: 4px;
+  height: 12px;
+  border-radius: 999px;
+  background: #73a7ff;
+  animation: waveform-bounce 700ms infinite ease-in-out;
+}
+
+.processing-spinner {
+  width: 20px;
+  height: 20px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #73a7ff;
+  border-radius: 999px;
+  animation: spin 800ms infinite linear;
+}
+
+.point-label {
+  padding: 6px 10px;
+  border-radius: 999px;
+  color: white;
+  background: rgba(47, 124, 255, 0.9);
+  font-size: 12px;
+}
+
+@keyframes waveform-bounce {
+  0%, 100% { transform: scaleY(0.55); }
+  50% { transform: scaleY(1.8); }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

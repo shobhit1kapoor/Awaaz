@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useRef, useState } from "react";
 
 interface UseMicrophoneResult {
   microphoneStream: MediaStream | null;
@@ -7,12 +7,17 @@ interface UseMicrophoneResult {
 }
 
 export function useMicrophone(): UseMicrophoneResult {
-  const [microphoneStream, setMicrophoneStream] = useState<MediaStream | null>(null);
+  const [microphoneStream, setMicrophoneStream] = useState<MediaStream | null>(
+    null,
+  );
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const microphoneStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
 
   const startRecording = useCallback(async () => {
-    const nextMicrophoneStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const nextMicrophoneStream = await navigator.mediaDevices.getUserMedia({
+      audio: true,
+    });
     audioChunksRef.current = [];
 
     const mediaRecorder = new MediaRecorder(nextMicrophoneStream);
@@ -24,27 +29,35 @@ export function useMicrophone(): UseMicrophoneResult {
 
     mediaRecorder.start();
     mediaRecorderRef.current = mediaRecorder;
+    microphoneStreamRef.current = nextMicrophoneStream;
     setMicrophoneStream(nextMicrophoneStream);
   }, []);
 
   const stopRecording = useCallback(async () => {
     const mediaRecorder = mediaRecorderRef.current;
     if (!mediaRecorder) {
-      throw new Error('Recording has not started.');
+      throw new Error("Recording has not started.");
     }
 
     const recordedAudioBlob = await new Promise<Blob>((resolve) => {
       mediaRecorder.onstop = () => {
-        resolve(new Blob(audioChunksRef.current, { type: mediaRecorder.mimeType || 'audio/webm' }));
+        resolve(
+          new Blob(audioChunksRef.current, {
+            type: mediaRecorder.mimeType || "audio/webm",
+          }),
+        );
       };
       mediaRecorder.stop();
     });
 
-    microphoneStream?.getTracks().forEach((microphoneTrack) => microphoneTrack.stop());
+    microphoneStreamRef.current
+      ?.getTracks()
+      .forEach((microphoneTrack) => microphoneTrack.stop());
+    microphoneStreamRef.current = null;
     mediaRecorderRef.current = null;
     setMicrophoneStream(null);
     return recordedAudioBlob;
-  }, [microphoneStream]);
+  }, []);
 
   return { microphoneStream, startRecording, stopRecording };
 }

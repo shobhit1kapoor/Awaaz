@@ -26,7 +26,7 @@ fn get_cursor_pos_for_platform() -> Result<(i32, i32), String> {
 #[cfg(target_os = "windows")]
 async fn move_cursor_to_for_platform(x: i32, y: i32, duration_ms: u64) -> Result<(), String> {
     use std::time::Duration;
-    use windows::Win32::UI::Input::KeyboardAndMouse::SetCursorPos;
+    use windows::Win32::UI::WindowsAndMessaging::SetCursorPos;
 
     let (start_x, start_y) = get_cursor_pos_for_platform()?;
     let animation_steps = 60_u64.max(duration_ms / 8);

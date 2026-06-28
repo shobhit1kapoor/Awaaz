@@ -4,7 +4,8 @@ export function calculateRmsAudioLevel(samples: Float32Array): number {
   }
 
   const sumOfSquares = samples.reduce(
-    (currentSumOfSquares, audioSample) => currentSumOfSquares + audioSample * audioSample,
+    (currentSumOfSquares, audioSample) =>
+      currentSumOfSquares + audioSample * audioSample,
     0,
   );
 

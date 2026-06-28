@@ -1,4 +1,4 @@
-import type { PointTag } from '../../lib/pointParser';
+import type { PointTag } from "../../lib/pointParser";
 
 interface PointerAnimationProps {
   activePoint: PointTag | null;

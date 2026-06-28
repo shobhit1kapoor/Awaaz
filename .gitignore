@@ -13,6 +13,11 @@ dist-ssr
 src-tauri/target
 src-tauri/gen/schemas
 *.local
+.env
+.env.*
+!.env.example
+worker/.dev.vars
+worker/.wrangler
 
 # Editor directories and files
 .vscode/*

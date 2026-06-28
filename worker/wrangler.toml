@@ -3,6 +3,4 @@ main = "src/index.ts"
 compatibility_date = "2024-01-01"
 
 [vars]
-NVIDIA_CHAT_MODEL = "moonshotai/kimi-k2-thinking"
-NVIDIA_STT_MODEL = "openai/whisper-large-v3"
-NVIDIA_TTS_MODEL = "openai/whisper-large-v3"
+NVIDIA_CHAT_MODEL = "moonshotai/kimi-k2.6"

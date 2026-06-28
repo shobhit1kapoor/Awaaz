@@ -18,6 +18,23 @@ implementing the Tauri equivalent. The Swift code is the ground truth for behavi
 **This is a faithful port, not a redesign.** Match the UX exactly. Same pipeline, same feel,
 same [POINT] system. Replace macOS-only APIs with Windows equivalents. Do not invent new features.
 
+### Current Windows core architecture
+
+- The always-running `overlay` webview owns the voice pipeline through `useVoiceController.ts`.
+- The global shortcut and panel button emit the same push-to-talk events. `useAppStateBridge.ts`
+  mirrors overlay state into the panel.
+- `capture_screen` uses `windows-capture` to grab the monitor containing the cursor, includes the
+  cursor and physical monitor metadata, resizes to at most 1280px wide, and returns JPEG quality 75.
+- The overlay is sized to the complete Windows virtual desktop and the blue dot follows the physical
+  cursor through `useCursorPosition.ts`.
+- `VITE_TTS_MODE=local` is the runnable default and queues Windows/WebView speech synthesis.
+  Worker TTS remains optional and requires a verified `NVIDIA_TTS_MODEL`.
+- The Worker exposes `GET /health`, NVIDIA chat, AssemblyAI pre-recorded transcription, optional
+  TTS, and the AssemblyAI streaming-token route. Provider keys remain Worker secrets.
+- `commands/action.rs` exposes only `open_app` and `open_folder`. Targets are resolved from Windows
+  app aliases, Start Menu shortcuts, and standard user folders; arbitrary shell commands are never
+  accepted. `actionParser.ts` handles model tags and deterministic explicit voice-command fallback.
+
 ---
 
 ## How to Read the Swift Source (Reference Files)
@@ -291,7 +308,8 @@ pub async fn capture_screen() -> Result<String, String> {
     // Returns base64-encoded JPEG at 75% quality, max 1280px wide
     // MUST capture the monitor that the cursor is currently on — same as original
     // Include cursor position metadata: { base64: String, cursor_x: i32, cursor_y: i32, monitor_id: u32 }
-    todo!("Implement with windows-capture crate")
+    // Implemented: first-frame capture, JPEG quality 75, max width 1280,
+    // plus cursor, monitor bounds, and encoded-image metadata.
 }
 ```
 
@@ -307,7 +325,7 @@ use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 #[tauri::command]
 pub fn get_cursor_pos() -> Result<(i32, i32), String> {
     // Returns current cursor position in screen coordinates (DPI-aware)
-    todo!()
+    // Implemented with GetCursorPos.
 }
 
 #[tauri::command]
@@ -317,7 +335,7 @@ pub async fn move_cursor_to(x: i32, y: i32, duration_ms: u64) -> Result<(), Stri
     // 60 steps minimum for smooth animation
     // IMPORTANT: This moves the REAL system cursor, not just the overlay dot
     // The overlay dot follows via a separate React animation
-    todo!()
+    // Implemented with eased SetCursorPos steps.
 }
 ```
 
@@ -342,7 +360,7 @@ pub struct MonitorInfo {
 pub fn list_monitors() -> Result<Vec<MonitorInfo>, String> {
     // Return all connected monitors with their position, size, and DPI scale
     // Required for multi-monitor [POINT] coordinate mapping
-    todo!()
+    // Implemented through Tauri monitor enumeration.
 }
 ```
 
@@ -603,9 +621,11 @@ This is the same as the original. Keep it. Just add the Deepgram token route.
 
 ```typescript
 // Routes:
-// POST /chat        → Anthropic /v1/messages (SSE proxy)
-// POST /tts         → OpenAI /v1/audio/speech (streaming audio proxy)
-// GET  /transcribe-token → Deepgram short-lived key
+// GET  /health      → non-secret provider readiness
+// POST /chat        → NVIDIA OpenAI-compatible chat (SSE proxy)
+// POST /transcribe  → AssemblyAI upload + Universal-3 Pro transcription
+// POST /tts         → optional configured cloud TTS
+// POST /transcribe-token → AssemblyAI short-lived streaming token
 
 // Secrets (wrangler secret put):
 // ANTHROPIC_API_KEY
@@ -647,10 +667,11 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 base64 = "0.22"
 image = "0.25"
+tauri-plugin-global-shortcut = "2"
 
 # Windows-specific
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.58", features = [
+windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_UI_WindowsAndMessaging",
   "Win32_UI_Input_KeyboardAndMouse",

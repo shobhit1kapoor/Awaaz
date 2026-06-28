@@ -1,5 +1,8 @@
-import { useCallback } from 'react';
-import { createChatCompletionStream, type ChatRequestPayload } from '../lib/workerClient';
+import { useCallback } from "react";
+import {
+  createChatCompletionStream,
+  type ChatRequestPayload,
+} from "../lib/workerClient";
 
 interface UseClaudeSSEResult {
   streamClaudeResponse: (
@@ -10,16 +13,19 @@ interface UseClaudeSSEResult {
 
 export function useClaudeSSE(): UseClaudeSSEResult {
   const streamClaudeResponse = useCallback(
-    async (chatRequestPayload: ChatRequestPayload, onTextDelta: (textDelta: string) => void) => {
+    async (
+      chatRequestPayload: ChatRequestPayload,
+      onTextDelta: (textDelta: string) => void,
+    ) => {
       const response = await createChatCompletionStream(chatRequestPayload);
       const responseReader = response.body?.getReader();
       if (!responseReader) {
-        throw new Error('Chat response did not include a readable stream.');
+        throw new Error("Chat response did not include a readable stream.");
       }
 
       const textDecoder = new TextDecoder();
-      let pendingSseText = '';
-      let fullResponseText = '';
+      let pendingSseText = "";
+      let fullResponseText = "";
 
       while (true) {
         const readResult = await responseReader.read();
@@ -27,9 +33,11 @@ export function useClaudeSSE(): UseClaudeSSEResult {
           break;
         }
 
-        pendingSseText += textDecoder.decode(readResult.value, { stream: true });
-        const sseLines = pendingSseText.split('\n');
-        pendingSseText = sseLines.pop() ?? '';
+        pendingSseText += textDecoder.decode(readResult.value, {
+          stream: true,
+        });
+        const sseLines = pendingSseText.split("\n");
+        pendingSseText = sseLines.pop() ?? "";
 
         for (const sseLine of sseLines) {
           const textDelta = extractTextDeltaFromSseLine(sseLine);
@@ -49,12 +57,12 @@ export function useClaudeSSE(): UseClaudeSSEResult {
 }
 
 function extractTextDeltaFromSseLine(sseLine: string): string | null {
-  if (!sseLine.startsWith('data:')) {
+  if (!sseLine.startsWith("data:")) {
     return null;
   }
 
-  const dataText = sseLine.slice('data:'.length).trim();
-  if (!dataText || dataText === '[DONE]') {
+  const dataText = sseLine.slice("data:".length).trim();
+  if (!dataText || dataText === "[DONE]") {
     return null;
   }
 

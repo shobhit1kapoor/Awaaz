@@ -8,7 +8,10 @@ export interface PointTag {
 
 const POINT_REGEX = /\[POINT:(\d+):(\d+):([^:\]]+):screen(\d+)\]/g;
 
-export function parsePointTags(text: string): { cleanText: string; points: PointTag[] } {
+export function parsePointTags(text: string): {
+  cleanText: string;
+  points: PointTag[];
+} {
   const points: PointTag[] = [];
   let cleanText = text;
 
@@ -21,8 +24,11 @@ export function parsePointTags(text: string): { cleanText: string; points: Point
       screenIndex: Number.parseInt(pointMatch[4], 10),
       rawTag,
     });
-    cleanText = cleanText.replace(rawTag, '');
+    cleanText = cleanText.replace(rawTag, "");
   }
 
-  return { cleanText: cleanText.trim(), points };
+  return {
+    cleanText: cleanText.replace(/\s+([.,!?;:])/g, "$1").trim(),
+    points,
+  };
 }

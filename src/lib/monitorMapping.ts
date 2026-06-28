@@ -20,7 +20,7 @@ export function mapPointToAbsoluteCoordinates(
   }
 
   return {
-    absX: targetMonitor.x + Math.round(x * targetMonitor.scale_factor),
-    absY: targetMonitor.y + Math.round(y * targetMonitor.scale_factor),
+    absX: targetMonitor.x + Math.round(x),
+    absY: targetMonitor.y + Math.round(y),
   };
 }

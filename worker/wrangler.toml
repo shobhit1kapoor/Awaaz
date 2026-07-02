@@ -3,4 +3,4 @@ main = "src/index.ts"
 compatibility_date = "2024-01-01"
 
 [vars]
-NVIDIA_CHAT_MODEL = "moonshotai/kimi-k2.6"
+NVIDIA_CHAT_MODEL = "meta/llama-4-maverick-17b-128e-instruct"

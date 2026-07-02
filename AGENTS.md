@@ -24,16 +24,24 @@ same [POINT] system. Replace macOS-only APIs with Windows equivalents. Do not in
 - The global shortcut and panel button emit the same push-to-talk events. `useAppStateBridge.ts`
   mirrors overlay state into the panel.
 - `capture_screen` uses `windows-capture` to grab the monitor containing the cursor, includes the
-  cursor and physical monitor metadata, resizes to at most 1280px wide, and returns JPEG quality 75.
+  cursor and physical monitor metadata, resizes to at most 1024px wide, and returns JPEG quality 65.
 - The overlay is sized to the complete Windows virtual desktop and the blue dot follows the physical
   cursor through `useCursorPosition.ts`.
 - `VITE_TTS_MODE=local` is the runnable default and queues Windows/WebView speech synthesis.
   Worker TTS remains optional and requires a verified `NVIDIA_TTS_MODEL`.
+- Push-to-talk uses AssemblyAI Universal-3 Pro WebSocket streaming through a cached Worker
+  `/transcribe-token`; AssemblyAI pre-recorded transcription remains as the VAD fallback path.
+- The default screenshot-aware chat model is `meta/llama-4-maverick-17b-128e-instruct`;
+  `moonshotai/kimi-k2.6` remains available as the deeper/fallback model.
 - The Worker exposes `GET /health`, NVIDIA chat, AssemblyAI pre-recorded transcription, optional
   TTS, and the AssemblyAI streaming-token route. Provider keys remain Worker secrets.
-- `commands/action.rs` exposes only `open_app` and `open_folder`. Targets are resolved from Windows
-  app aliases, Start Menu shortcuts, and standard user folders; arbitrary shell commands are never
-  accepted. `actionParser.ts` handles model tags and deterministic explicit voice-command fallback.
+- `commands/action.rs` exposes allowlisted local actions such as app/folder open, URL/search open,
+  and dictated text typing. Targets are resolved from Windows app aliases, Start Menu shortcuts,
+  and standard user folders; arbitrary shell commands are never accepted. `actionParser.ts` handles
+  model tags and deterministic explicit voice-command fallback.
+- Agentic app/browser actions use an allowlisted JSON plan in `agentPlan.ts`, execute through
+  `agentExecutor.ts`, and reach native primitives through `commands/agent.rs`. Safe planned
+  actions run without confirmation prompts; blocked high-impact intents fail closed.
 
 ---
 
@@ -114,12 +122,12 @@ USER HOLDS HOTKEY (Ctrl+Shift+Space)
 [JS] getUserMedia({ audio: true }) → MediaRecorder → WebSocket
     │
     ▼
-[Deepgram or AssemblyAI] Streaming WebSocket → interim transcripts displayed live
+[AssemblyAI] Streaming WebSocket → interim transcripts displayed live
     │
 USER RELEASES HOTKEY
     │
     ▼
-[Deepgram] sends final transcript → WebSocket closes
+[AssemblyAI] sends final transcript → WebSocket closes
     │
     ▼
 [Tauri Rust] invoke("capture_screen") → base64 JPEG of screen with cursor on it
@@ -128,7 +136,7 @@ USER RELEASES HOTKEY
 [JS] POST to Worker /chat with { screenshot_base64, transcript, conversation_history }
     │
     ▼
-[Cloudflare Worker] → Anthropic Claude SSE stream (model: claude-haiku-4-5 default)
+[Cloudflare Worker] → NVIDIA SSE stream (model: Llama 4 Maverick default)
     │
     ▼
 [JS] SSE stream → tokens render in overlay in real time
@@ -173,14 +181,18 @@ ai-buddy-windows/
 │   │       └── SettingsPanel.tsx
 │   ├── hooks/
 │   │   ├── useMicrophone.ts         ← getUserMedia, MediaRecorder, audio level
-│   │   ├── useDeepgramStream.ts     ← WebSocket STT, interim + final transcript
+│   │   ├── useAssemblyAIStreaming.ts ← push-to-talk WebSocket STT
+│   │   ├── useDeepgramStream.ts     ← pre-recorded AssemblyAI fallback for VAD
 │   │   ├── useClaudeSSE.ts          ← SSE stream from Worker /chat
 │   │   ├── useTTSPlayer.ts          ← stream audio from Worker /tts, play chunks
 │   │   └── usePointParser.ts        ← parse [POINT:x,y:label:screenN] from text
 │   ├── lib/
+│   │   ├── agentPlan.ts             ← allowlisted JSON plan schema/parser for agentic actions
+│   │   ├── agentExecutor.ts         ← executes plan steps via Tauri commands
 │   │   ├── workerClient.ts          ← all HTTP calls to Cloudflare Worker
 │   │   ├── pointParser.ts           ← regex + coord parser for [POINT] tags
 │   │   ├── sentenceDetector.ts      ← detect sentence boundaries for TTS chunking
+│   │   ├── pcmAudio.ts              ← downsample Float32 mic buffers to 16 kHz PCM16
 │   │   └── audioLevel.ts           ← RMS level from mic buffer for waveform
 │   ├── store/
 │   │   └── appStore.ts              ← Zustand: voice state, conversation, settings
@@ -193,6 +205,7 @@ ai-buddy-windows/
 │   │   ├── main.rs                  ← Tauri entry, thin: just calls lib.rs setup
 │   │   ├── lib.rs                   ← app builder: plugins, windows, command registration
 │   │   ├── commands/
+│   │   │   ├── agent.rs             ← agent plan primitives: wait/key/window/UIA/CDP scaffold
 │   │   │   ├── screen.rs            ← capture_screen() → base64 JPEG
 │   │   │   ├── cursor.rs            ← get_cursor_pos(), move_cursor_to(x,y,ms)
 │   │   │   ├── window.rs            ← setup_overlay_window(), click_through()
@@ -305,16 +318,16 @@ use image::{ImageFormat, DynamicImage};
 #[tauri::command]
 pub async fn capture_screen() -> Result<String, String> {
     // Use `windows-capture` crate for WinRT-based capture
-    // Returns base64-encoded JPEG at 75% quality, max 1280px wide
+    // Returns base64-encoded JPEG at 65% quality, max 1024px wide
     // MUST capture the monitor that the cursor is currently on — same as original
     // Include cursor position metadata: { base64: String, cursor_x: i32, cursor_y: i32, monitor_id: u32 }
-    // Implemented: first-frame capture, JPEG quality 75, max width 1280,
+    // Implemented: first-frame capture, JPEG quality 65, max width 1024,
     // plus cursor, monitor bounds, and encoded-image metadata.
 }
 ```
 
 **Reference:** Read `CompanionScreenCaptureUtility.swift` — it captures the screen the cursor
-is on, resizes if needed, and returns PNG. We use JPEG 75% quality instead to save tokens.
+is on, resizes if needed, and returns PNG. We use JPEG 65% quality instead to save tokens.
 
 ### `cursor.rs`
 
@@ -477,55 +490,13 @@ The overlay shows different content per state:
 
 ---
 
-## STT: Deepgram Integration (`src/hooks/useDeepgramStream.ts`)
+## STT: AssemblyAI Streaming (`src/hooks/useAssemblyAIStreaming.ts`)
 
-We use Deepgram Nova-3 instead of AssemblyAI (cheaper, faster, same WebSocket protocol).
-
-**Reference:** `AssemblyAIStreamingTranscriptionProvider.swift` — same concept, different WebSocket URL.
-
-```typescript
-// Get a short-lived token from the Worker first
-const { token } = await fetch(`${WORKER_URL}/transcribe-token`).then(r => r.json());
-
-// Open WebSocket with the token
-const ws = new WebSocket(
-  `wss://api.deepgram.com/v1/listen?model=nova-3&encoding=linear16&sample_rate=16000&channels=1&interim_results=true`,
-  ['token', token]
-);
-
-// CRITICAL from Swift original: use a single long-lived WebSocket connection
-// Do NOT create a new WebSocket per push-to-talk session
-// Just send/stop audio on the existing connection
-// See: AssemblyAIStreamingTranscriptionProvider.swift shared URLSession pattern
-
-ws.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  if (data.type === 'Results') {
-    const transcript = data.channel.alternatives[0].transcript;
-    const isFinal = data.is_final;
-    if (isFinal && transcript) {
-      onFinalTranscript(transcript); // triggers Claude call
-    } else if (transcript) {
-      onInterimTranscript(transcript); // display live in overlay
-    }
-  }
-};
-```
-
-**Worker route to add (`worker/src/index.ts`):**
-
-```typescript
-// GET /transcribe-token → returns short-lived Deepgram token
-// Same pattern as original AssemblyAI token endpoint
-if (url.pathname === '/transcribe-token') {
-  const res = await fetch('https://api.deepgram.com/v1/projects/{PROJECT_ID}/keys', {
-    method: 'POST',
-    headers: { Authorization: `Token ${env.DEEPGRAM_API_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ comment: 'session-token', scopes: ['usage:write'], time_to_live_in_seconds: 480 }),
-  });
-  return Response.json(await res.json());
-}
-```
+Push-to-talk uses AssemblyAI Universal-3 Pro Streaming over a browser WebSocket. The app
+warms a short-lived token from Worker `/transcribe-token`, keeps the microphone stream warm,
+streams 16 kHz PCM16 audio chunks, shows interim `Turn` transcripts, and treats the turn as
+complete when `end_of_turn` and `turn_is_formatted` are both true. The older
+`useDeepgramStream.ts` name remains as the pre-recorded AssemblyAI fallback used by VAD.
 
 ---
 
@@ -539,7 +510,7 @@ const response = await fetch(`${WORKER_URL}/chat`, {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
-    model: selectedModel, // 'claude-haiku-4-5' | 'claude-sonnet-4-6' | 'claude-opus-4-6'
+    model: selectedModel, // Llama 4 Maverick default; Kimi and Nemotron remain selectable
     max_tokens: 512,
     stream: true,
     system: SYSTEM_PROMPT,  // see below
@@ -617,7 +588,7 @@ function detectSentenceBoundary(text: string): string | null {
 
 ## Cloudflare Worker (`worker/src/index.ts`)
 
-This is the same as the original. Keep it. Just add the Deepgram token route.
+This is the same proxy shape as the original, adapted for NVIDIA chat and AssemblyAI STT.
 
 ```typescript
 // Routes:
@@ -630,7 +601,6 @@ This is the same as the original. Keep it. Just add the Deepgram token route.
 // Secrets (wrangler secret put):
 // ANTHROPIC_API_KEY
 // OPENAI_API_KEY
-// DEEPGRAM_API_KEY
 
 // DO NOT put these in wrangler.toml — secrets only
 ```
@@ -717,7 +687,7 @@ tauri-build = { version = "2", features = [] }
 - ❌ Do not create a new WebSocket per push-to-talk session (see AssemblyAI note in original)
 - ❌ Do not skip the click-through setup on the overlay window — the app is unusable without it
 - ❌ Do not make the overlay window appear in the taskbar (`skip_taskbar: true`)
-- ❌ Do not compress screenshots to PNG — use JPEG 75% quality to save Claude tokens
+- ❌ Do not compress screenshots to PNG — use JPEG 65% quality to save model tokens
 
 ---
 
@@ -747,7 +717,6 @@ cd worker && npm install
 # Create worker/.dev.vars:
 # ANTHROPIC_API_KEY=sk-ant-...
 # OPENAI_API_KEY=sk-...
-# DEEPGRAM_API_KEY=...
 npx wrangler dev   # runs at http://localhost:8787
 ```
 
@@ -800,7 +769,7 @@ Before calling any feature done, verify:
 - **Tauri 2 window config:** https://v2.tauri.app/reference/config/
 - **Tauri 2 capabilities:** https://v2.tauri.app/security/capabilities/
 - **windows-capture crate:** https://crates.io/crates/windows-capture
-- **Deepgram streaming docs:** https://developers.deepgram.com/docs/getting-started-with-live-streaming-audio
+- **AssemblyAI streaming docs:** https://www.assemblyai.com/docs/streaming/universal-3-pro/u3-pro-message-sequence
 - **Anthropic SSE streaming:** https://docs.anthropic.com/en/api/messages-streaming
 - **Prompt caching (use this!):** https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
 - **Cloudflare Workers:** https://developers.cloudflare.com/workers/

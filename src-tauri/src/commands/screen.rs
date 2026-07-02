@@ -12,11 +12,17 @@ pub struct ScreenCaptureResult {
     pub image_height: u32,
 }
 
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const MAX_SCREENSHOT_WIDTH: u32 = 1024;
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const SCREENSHOT_JPEG_QUALITY: u8 = 65;
+
 #[tauri::command]
 pub async fn capture_screen() -> Result<ScreenCaptureResult, String> {
     capture_screen_for_platform().await
 }
 
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn calculate_resized_dimensions(width: u32, height: u32, max_width: u32) -> (u32, u32) {
     if width <= max_width {
         return (width, height);
@@ -26,6 +32,7 @@ fn calculate_resized_dimensions(width: u32, height: u32, max_width: u32) -> (u32
     (max_width, resized_height.max(1))
 }
 
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn convert_bgra_to_rgb(bgra: &[u8]) -> Result<Vec<u8>, String> {
     if !bgra.len().is_multiple_of(4) {
         return Err("Captured BGRA data did not contain complete pixels.".to_string());
@@ -42,6 +49,22 @@ async fn capture_screen_for_platform() -> Result<ScreenCaptureResult, String> {
     tokio::task::spawn_blocking(capture_cursor_monitor)
         .await
         .map_err(|error| format!("Screen capture task failed: {error}"))?
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn capture_screen_for_platform() -> Result<ScreenCaptureResult, String> {
+    Ok(ScreenCaptureResult {
+        base64: String::new(),
+        cursor_x: 0,
+        cursor_y: 0,
+        monitor_id: 0,
+        monitor_x: 0,
+        monitor_y: 0,
+        monitor_width: 0,
+        monitor_height: 0,
+        image_width: 0,
+        image_height: 0,
+    })
 }
 
 #[cfg(target_os = "windows")]
@@ -157,7 +180,7 @@ fn capture_cursor_monitor() -> Result<ScreenCaptureResult, String> {
             .ok_or_else(|| "Captured frame dimensions did not match its pixel data.".to_string())?;
     let mut image = DynamicImage::ImageRgb8(rgb_image);
     let (resized_width, resized_height) =
-        calculate_resized_dimensions(image.width(), image.height(), 1280);
+        calculate_resized_dimensions(image.width(), image.height(), MAX_SCREENSHOT_WIDTH);
     if resized_width != image.width() {
         image = image.resize_exact(
             resized_width,
@@ -169,7 +192,7 @@ fn capture_cursor_monitor() -> Result<ScreenCaptureResult, String> {
     let image_width = image.width();
     let image_height = image.height();
     let mut jpeg_bytes = Vec::new();
-    JpegEncoder::new_with_quality(&mut jpeg_bytes, 75)
+    JpegEncoder::new_with_quality(&mut jpeg_bytes, SCREENSHOT_JPEG_QUALITY)
         .encode_image(&image)
         .map_err(|error| format!("Could not encode screenshot as JPEG: {error}"))?;
 
@@ -216,23 +239,7 @@ mod tests {
     fn captures_current_monitor() {
         let capture = super::capture_cursor_monitor().expect("current monitor should be captured");
         assert!(!capture.base64.is_empty());
-        assert!(capture.image_width <= 1280);
+        assert!(capture.image_width <= super::MAX_SCREENSHOT_WIDTH);
         assert!(capture.image_height > 0);
     }
-}
-
-#[cfg(not(target_os = "windows"))]
-async fn capture_screen_for_platform() -> Result<ScreenCaptureResult, String> {
-    Ok(ScreenCaptureResult {
-        base64: String::new(),
-        cursor_x: 0,
-        cursor_y: 0,
-        monitor_id: 0,
-        monitor_x: 0,
-        monitor_y: 0,
-        monitor_width: 0,
-        monitor_height: 0,
-        image_width: 0,
-        image_height: 0,
-    })
 }

@@ -2,11 +2,11 @@ import { type ClaudeModel, useAppStore } from "../../store/appStore";
 import { publishSelectedModel } from "../../lib/appEvents";
 
 const availableModels: Array<{ label: string; value: ClaudeModel }> = [
-  { label: "Kimi K2.6", value: "moonshotai/kimi-k2.6" },
   {
     label: "Llama 4 Maverick",
     value: "meta/llama-4-maverick-17b-128e-instruct",
   },
+  { label: "Kimi K2.6", value: "moonshotai/kimi-k2.6" },
   {
     label: "Nemotron Nano VL",
     value: "nvidia/nemotron-nano-12b-v2-vl",

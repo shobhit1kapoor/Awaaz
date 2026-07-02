@@ -1,4 +1,5 @@
 import type { ConversationMessage } from "../store/appStore";
+import { parseAgentPlan, type AgentPlan } from "./agentPlan";
 
 export interface ScreenCapturePayload {
   base64: string;
@@ -24,9 +25,19 @@ export interface TranscriptionResult {
   text: string;
 }
 
+interface TranscriptionTokenResult {
+  token: string;
+}
+
 const workerUrl = import.meta.env.VITE_WORKER_URL;
 const defaultChatModel =
-  import.meta.env.VITE_DEFAULT_CHAT_MODEL ?? "moonshotai/kimi-k2.6";
+  import.meta.env.VITE_DEFAULT_CHAT_MODEL ??
+  "meta/llama-4-maverick-17b-128e-instruct";
+
+let cachedTranscriptionToken: {
+  token: string;
+  expiresAtMilliseconds: number;
+} | null = null;
 
 export const CLICKY_SYSTEM_PROMPT = `You are Awaaz, an AI buddy that lives next to the user's cursor on Windows.
 You can see their screen, hear their spoken request, and help with safe local actions.
@@ -52,9 +63,42 @@ When the user explicitly asks for one of these actions, append exactly one actio
 
 Only emit action tags for explicit commands from the user's current spoken request.
 Never infer actions from the screenshot, from previous messages, or from your own suggestion.
-Never emit actions for deleting, submitting forms, purchases, passwords, PINs, OTPs, payment data, or security codes.
+Do not ask for confirmation before safe allowlisted actions like opening apps, searching, typing dictated text, clicking obvious controls, or navigating pages.
+Never emit actions for deleting, purchases, passwords, PINs, OTPs, payment data, or security codes. For those, briefly say you cannot do that.
 For typing, only emit type_text when the user explicitly says to type, write, or enter the exact text.
 Never explain what you're doing or that you're an AI. Just help.`;
+
+const AGENT_PLANNER_SYSTEM_PROMPT = `You are the action planner for Awaaz, a Windows desktop agent.
+Return only compact JSON. No markdown. No commentary.
+
+Plan safe UI actions using only these tools:
+- open_app target
+- open_folder target
+- open_url target
+- web_search query
+- type_text text
+- wait_ms durationMs
+- press_key key: Enter, Escape, Tab, Space
+- wait_for_window titleIncludes timeoutMs
+- find_control role nameIncludes automationId
+- click_control controlId
+- set_value controlId text
+- browser_open url
+- browser_snapshot
+- browser_click selector text
+- browser_type selector text
+- browser_wait durationMs
+
+Rules:
+- Do not ask for confirmation for safe allowlisted actions.
+- Do not plan purchases, deletes, payments, password/PIN/OTP/security-code entry, form submission, or sending messages.
+- Prefer app-agnostic UI Automation steps for desktop apps.
+- Prefer browser_* steps for websites.
+- Keep plans under 12 steps.
+- Use response as the short thing Awaaz should say after executing.
+
+JSON shape:
+{"goal":"...","shouldExecute":true,"response":"...","steps":[{"type":"open_app","target":"Spotify"}]}`;
 
 export function getWorkerUrl(): string {
   if (!workerUrl) {
@@ -135,6 +179,36 @@ export async function transcribeAudio(
   return response.json() as Promise<TranscriptionResult>;
 }
 
+export async function getAssemblyAIStreamingToken(): Promise<string> {
+  const nowMilliseconds = Date.now();
+  if (
+    cachedTranscriptionToken &&
+    cachedTranscriptionToken.expiresAtMilliseconds - nowMilliseconds > 60_000
+  ) {
+    return cachedTranscriptionToken.token;
+  }
+
+  const response = await fetch(`${getWorkerUrl()}/transcribe-token`, {
+    method: "POST",
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    throw new Error(`Transcription token failed: ${await response.text()}`);
+  }
+
+  const tokenResult = (await response.json()) as TranscriptionTokenResult;
+  if (!tokenResult.token) {
+    throw new Error("Transcription token response did not include a token.");
+  }
+
+  cachedTranscriptionToken = {
+    token: tokenResult.token,
+    expiresAtMilliseconds: nowMilliseconds + 480_000,
+  };
+  return tokenResult.token;
+}
+
 export async function fetchTextToSpeechAudio(
   sentence: string,
 ): Promise<Response> {
@@ -149,4 +223,47 @@ export async function fetchTextToSpeechAudio(
   }
 
   return response;
+}
+
+export async function createAgentPlan(transcript: string): Promise<AgentPlan> {
+  const response = await fetch(`${getWorkerUrl()}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: defaultChatModel,
+      max_tokens: 700,
+      temperature: 0,
+      stream: false,
+      messages: [
+        { role: "system", content: AGENT_PLANNER_SYSTEM_PROMPT },
+        { role: "user", content: transcript },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Agent planner failed: ${await response.text()}`);
+  }
+
+  const responseText = await response.text();
+  return parseAgentPlan(extractChatContent(responseText));
+}
+
+function extractChatContent(responseText: string): string {
+  const parsedResponse = JSON.parse(responseText) as {
+    choices?: Array<{
+      message?: { content?: string };
+      text?: string;
+    }>;
+    content?: string;
+  };
+
+  const content =
+    parsedResponse.choices?.[0]?.message?.content ??
+    parsedResponse.choices?.[0]?.text ??
+    parsedResponse.content;
+  if (!content) {
+    throw new Error("Agent planner response did not include content.");
+  }
+  return content;
 }

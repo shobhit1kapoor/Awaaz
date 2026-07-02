@@ -2,8 +2,8 @@ import { create } from "zustand";
 
 export type VoiceState = "idle" | "listening" | "processing" | "responding";
 export type ClaudeModel =
-  | "moonshotai/kimi-k2.6"
   | "meta/llama-4-maverick-17b-128e-instruct"
+  | "moonshotai/kimi-k2.6"
   | "nvidia/nemotron-nano-12b-v2-vl";
 
 export interface ConversationMessage {
@@ -37,7 +37,7 @@ interface AppState extends AppSnapshot {
 
 export const useAppStore = create<AppState>((set) => ({
   voiceState: "idle",
-  selectedModel: "moonshotai/kimi-k2.6",
+  selectedModel: "meta/llama-4-maverick-17b-128e-instruct",
   isClickyVisible: true,
   isVadEnabled: false,
   interimTranscript: "",

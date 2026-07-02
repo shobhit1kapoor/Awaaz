@@ -18,9 +18,18 @@ import {
   parseActionTags,
   type WindowsAction,
 } from "../lib/actionParser";
+import { executeAgentPlan } from "../lib/agentExecutor";
+import {
+  shouldBlockAgenticRequest as shouldBlockPlannedRequest,
+  shouldUseAgenticPlanner as shouldPlanRequest,
+} from "../lib/agentPlan";
 import { parsePointTags } from "../lib/pointParser";
 import { detectFirstCompleteSentence } from "../lib/sentenceDetector";
-import { pingWorker, type ScreenCapturePayload } from "../lib/workerClient";
+import {
+  createAgentPlan,
+  pingWorker,
+  type ScreenCapturePayload,
+} from "../lib/workerClient";
 import {
   getAppSnapshot,
   type ClaudeModel,
@@ -28,12 +37,25 @@ import {
 } from "../store/appStore";
 import { useClaudeSSE } from "./useClaudeSSE";
 import { useDeepgramStream } from "./useDeepgramStream";
-import { useMicrophone } from "./useMicrophone";
+import { useAssemblyAIStreaming } from "./useAssemblyAIStreaming";
 import { useTTSPlayer } from "./useTTSPlayer";
 
 function mutateAndPublish(mutation: () => void): void {
   mutation();
   publishAppSnapshot(getAppSnapshot());
+}
+
+let pendingSnapshotPublishTimer: number | null = null;
+
+function mutateAndPublishSoon(mutation: () => void): void {
+  mutation();
+  if (pendingSnapshotPublishTimer !== null) {
+    return;
+  }
+  pendingSnapshotPublishTimer = window.setTimeout(() => {
+    pendingSnapshotPublishTimer = null;
+    publishAppSnapshot(getAppSnapshot());
+  }, 50);
 }
 
 function encodeVadAudioAsWav(audio: Float32Array): Blob {
@@ -45,12 +67,15 @@ function encodeVadAudioAsWav(audio: Float32Array): Blob {
 export function useVoiceController(): void {
   const isListeningRef = useRef(false);
   const isProcessingRef = useRef(false);
-  const recordingStartPromiseRef = useRef<Promise<void> | null>(null);
   const vadRef = useRef<MicVAD | null>(null);
   const isVadStartingRef = useRef(false);
 
-  const { startRecording, stopRecording } = useMicrophone();
   const { transcribeRecordedAudio } = useDeepgramStream();
+  const {
+    startStreamingTranscription,
+    stopStreamingTranscription,
+    warmStreamingTranscription,
+  } = useAssemblyAIStreaming();
   const { streamClaudeResponse } = useClaudeSSE();
   const { playTTS, drainTTS, cancelTTS } = useTTSPlayer();
 
@@ -82,8 +107,11 @@ export function useVoiceController(): void {
     }
   }, []);
 
-  const processRecordedAudio = useCallback(
-    async (recordedAudioBlob: Blob) => {
+  const processTranscript = useCallback(
+    async (
+      transcript: string,
+      screenshotPromise: Promise<ScreenCapturePayload>,
+    ) => {
       if (isProcessingRef.current) {
         return;
       }
@@ -94,14 +122,12 @@ export function useVoiceController(): void {
       );
 
       try {
-        const transcriptionResult =
-          await transcribeRecordedAudio(recordedAudioBlob);
-        const transcript = transcriptionResult.text.trim();
+        const cleanTranscript = transcript.trim();
         mutateAndPublish(() =>
-          useAppStore.getState().setInterimTranscript(transcript),
+          useAppStore.getState().setInterimTranscript(cleanTranscript),
         );
 
-        if (!transcript) {
+        if (!cleanTranscript) {
           mutateAndPublish(() => useAppStore.getState().setVoiceState("idle"));
           return;
         }
@@ -109,10 +135,68 @@ export function useVoiceController(): void {
         mutateAndPublish(() =>
           useAppStore
             .getState()
-            .appendConversationMessage({ role: "user", text: transcript }),
+            .appendConversationMessage({ role: "user", text: cleanTranscript }),
         );
 
-        const screenshot = await invoke<ScreenCapturePayload>("capture_screen");
+        if (shouldBlockPlannedRequest(cleanTranscript)) {
+          const displayedResponse = "I can't do that.";
+          mutateAndPublish(() => {
+            const appState = useAppStore.getState();
+            appState.setResponseText(displayedResponse);
+            appState.appendConversationMessage({
+              role: "assistant",
+              text: displayedResponse,
+            });
+            appState.setVoiceState("idle");
+          });
+          return;
+        }
+
+        if (shouldPlanRequest(cleanTranscript)) {
+          const agentPlan = await createAgentPlan(cleanTranscript);
+          const actionErrors = await executeAgentPlan(agentPlan);
+          const displayedResponse =
+            actionErrors.length === 0
+              ? agentPlan.response
+              : `I hit a snag: ${actionErrors.join(" ")}`;
+          mutateAndPublish(() => {
+            const appState = useAppStore.getState();
+            appState.setResponseText(displayedResponse);
+            appState.appendConversationMessage({
+              role: "assistant",
+              text: displayedResponse,
+            });
+            appState.setVoiceState("responding");
+          });
+          void playTTS(displayedResponse);
+          await drainTTS();
+          mutateAndPublish(() => useAppStore.getState().setVoiceState("idle"));
+          return;
+        }
+
+        const inferredAction = inferExplicitWindowsAction(cleanTranscript);
+        if (inferredAction) {
+          const actionErrors = await executeWindowsActions([inferredAction]);
+          const displayedResponse =
+            actionErrors.length === 0
+              ? actionResponseFor(inferredAction)
+              : `I couldn't complete that action: ${actionErrors.join(" ")}`;
+          mutateAndPublish(() => {
+            const appState = useAppStore.getState();
+            appState.setResponseText(displayedResponse);
+            appState.appendConversationMessage({
+              role: "assistant",
+              text: displayedResponse,
+            });
+            appState.setVoiceState("responding");
+          });
+          void playTTS(displayedResponse);
+          await drainTTS();
+          mutateAndPublish(() => useAppStore.getState().setVoiceState("idle"));
+          return;
+        }
+
+        const screenshot = await screenshotPromise;
         let textWaitingForSpeech = "";
         let receivedFirstToken = false;
         mutateAndPublish(() => useAppStore.getState().setResponseText(""));
@@ -120,7 +204,7 @@ export function useVoiceController(): void {
 
         const assistantResponseText = await streamClaudeResponse(
           {
-            transcript,
+            transcript: cleanTranscript,
             screenshot,
             conversationHistory: stateBeforeResponse.conversationHistory.slice(
               0,
@@ -129,7 +213,7 @@ export function useVoiceController(): void {
             model: stateBeforeResponse.selectedModel,
           },
           (textDelta) => {
-            mutateAndPublish(() => {
+            mutateAndPublishSoon(() => {
               const appState = useAppStore.getState();
               if (!receivedFirstToken) {
                 receivedFirstToken = true;
@@ -165,16 +249,10 @@ export function useVoiceController(): void {
         }
 
         const parsedAssistantResponse = parseActionTags(assistantResponseText);
-        const inferredAction = inferExplicitWindowsAction(transcript);
-        const actionsToExecute = inferredAction ? [inferredAction] : [];
-        const actionErrors = await executeWindowsActions(actionsToExecute);
         const cleanAssistantResponse = parsePointTags(
           parsedAssistantResponse.cleanText,
         ).cleanText;
-        const displayedResponse =
-          actionErrors.length === 0
-            ? cleanAssistantResponse
-            : `${cleanAssistantResponse}\n\nI couldn't complete that action: ${actionErrors.join(" ")}`;
+        const displayedResponse = cleanAssistantResponse;
         mutateAndPublish(() =>
           useAppStore.getState().setResponseText(displayedResponse),
         );
@@ -206,8 +284,19 @@ export function useVoiceController(): void {
       playTTS,
       resumeVadIfEnabled,
       streamClaudeResponse,
-      transcribeRecordedAudio,
     ],
+  );
+
+  const processRecordedAudio = useCallback(
+    async (recordedAudioBlob: Blob) => {
+      const transcriptionResult =
+        await transcribeRecordedAudio(recordedAudioBlob);
+      await processTranscript(
+        transcriptionResult.text,
+        invoke<ScreenCapturePayload>("capture_screen"),
+      );
+    },
+    [processTranscript, transcribeRecordedAudio],
   );
 
   const startVad = useCallback(async () => {
@@ -320,9 +409,11 @@ export function useVoiceController(): void {
     });
 
     try {
-      const recordingStartPromise = startRecording();
-      recordingStartPromiseRef.current = recordingStartPromise;
-      await recordingStartPromise;
+      await startStreamingTranscription((transcript) => {
+        mutateAndPublishSoon(() =>
+          useAppStore.getState().setInterimTranscript(transcript),
+        );
+      });
     } catch (error) {
       isListeningRef.current = false;
       mutateAndPublish(() => {
@@ -331,10 +422,8 @@ export function useVoiceController(): void {
         appState.setVoiceState("idle");
       });
       await resumeVadIfEnabled().catch(() => undefined);
-    } finally {
-      recordingStartPromiseRef.current = null;
     }
-  }, [cancelTTS, resumeVadIfEnabled, startRecording]);
+  }, [cancelTTS, resumeVadIfEnabled, startStreamingTranscription]);
 
   const stopPushToTalk = useCallback(async () => {
     if (!isListeningRef.current || isProcessingRef.current) {
@@ -343,9 +432,9 @@ export function useVoiceController(): void {
 
     isListeningRef.current = false;
     try {
-      await recordingStartPromiseRef.current;
-      const recordedAudioBlob = await stopRecording();
-      await processRecordedAudio(recordedAudioBlob);
+      const transcriptPromise = stopStreamingTranscription();
+      const screenshotPromise = invoke<ScreenCapturePayload>("capture_screen");
+      await processTranscript(await transcriptPromise, screenshotPromise);
     } catch (error) {
       mutateAndPublish(() => {
         const appState = useAppStore.getState();
@@ -354,12 +443,14 @@ export function useVoiceController(): void {
       });
       await resumeVadIfEnabled().catch(() => undefined);
     }
-  }, [processRecordedAudio, resumeVadIfEnabled, stopRecording]);
+  }, [processTranscript, resumeVadIfEnabled, stopStreamingTranscription]);
 
   useEffect(() => {
     void pingWorker().catch(() => undefined);
+    void warmStreamingTranscription().catch(() => undefined);
     const workerWarmupInterval = window.setInterval(() => {
       void pingWorker().catch(() => undefined);
+      void warmStreamingTranscription().catch(() => undefined);
     }, 30_000);
 
     if (getAppSnapshot().isVadEnabled) {
@@ -403,5 +494,26 @@ export function useVoiceController(): void {
       void vadRef.current?.destroy();
       vadRef.current = null;
     };
-  }, [startPushToTalk, startVad, stopPushToTalk, stopVad]);
+  }, [
+    startPushToTalk,
+    startVad,
+    stopPushToTalk,
+    stopVad,
+    warmStreamingTranscription,
+  ]);
+}
+
+function actionResponseFor(action: WindowsAction): string {
+  switch (action.kind) {
+    case "open_app":
+      return `Opening ${action.target}.`;
+    case "open_folder":
+      return `Opening ${action.target}.`;
+    case "open_url":
+      return "Opening that link.";
+    case "web_search":
+      return `Searching for ${action.target}.`;
+    case "type_text":
+      return "Typing that now.";
+  }
 }

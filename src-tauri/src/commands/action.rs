@@ -173,8 +173,7 @@ fn open_windows_target_for_platform(kind: &str, query: &str) -> Result<OpenTarge
         if trimmed_query.len() > 300 {
             return Err("URL is too long.".to_string());
         }
-        let url = if trimmed_query.starts_with("http://") || trimmed_query.starts_with("https://")
-        {
+        let url = if trimmed_query.starts_with("http://") || trimmed_query.starts_with("https://") {
             trimmed_query.to_string()
         } else if trimmed_query.starts_with("localhost") {
             format!("http://{trimmed_query}")
@@ -351,6 +350,7 @@ fn open_windows_target_for_platform(_kind: &str, _query: &str) -> Result<OpenTar
     Err("Opening applications and folders is only available on Windows.".to_string())
 }
 
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn normalize_name(name: &str) -> String {
     name.chars()
         .map(|character| {

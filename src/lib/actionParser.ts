@@ -132,6 +132,7 @@ function normalizeUrl(text: string): string {
 }
 
 function unwrapDictatedText(text: string): string {
-  const quotedText = text.match(/^["'“‘](.+?)["'”’]$/);
-  return quotedText ? quotedText[1] : text;
+  const trimmedText = text.trim();
+  const quotedText = trimmedText.match(/^["'](.+?)["']$/);
+  return quotedText ? quotedText[1] : trimmedText;
 }

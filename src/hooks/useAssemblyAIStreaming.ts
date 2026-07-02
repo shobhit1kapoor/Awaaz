@@ -27,21 +27,32 @@ interface AssemblyAIStreamingMessage {
   error?: string;
 }
 
+const STREAM_OPEN_TIMEOUT_MS = 8_000;
+const STREAM_STOP_TIMEOUT_MS = 2_500;
+
 export function useAssemblyAIStreaming() {
   const microphoneStreamRef = useRef<MediaStream | null>(null);
   const activeSessionRef = useRef<StreamingSession | null>(null);
 
   const warmStreamingTranscription = useCallback(async () => {
-    await getAssemblyAIStreamingToken();
+    await withTimeout(
+      getAssemblyAIStreamingToken(),
+      STREAM_OPEN_TIMEOUT_MS,
+      "AssemblyAI token request timed out.",
+    );
     if (!microphoneStreamRef.current) {
-      microphoneStreamRef.current = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
+      microphoneStreamRef.current = await withTimeout(
+        navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        }),
+        STREAM_OPEN_TIMEOUT_MS,
+        "Microphone permission or capture timed out.",
+      );
     }
   }, []);
 
@@ -52,7 +63,11 @@ export function useAssemblyAIStreaming() {
       }
 
       await warmStreamingTranscription();
-      const token = await getAssemblyAIStreamingToken();
+      const token = await withTimeout(
+        getAssemblyAIStreamingToken(),
+        STREAM_OPEN_TIMEOUT_MS,
+        "AssemblyAI token request timed out.",
+      );
       const socket = new WebSocket(
         `wss://streaming.assemblyai.com/v3/ws?speech_model=u3-rt-pro&encoding=pcm_s16le&sample_rate=16000&min_turn_silence=100&max_turn_silence=700&token=${encodeURIComponent(
           token,
@@ -128,20 +143,24 @@ export function useAssemblyAIStreaming() {
         }
       };
 
-      await new Promise<void>((resolve, reject) => {
-        const handleOpen = () => {
-          socket.removeEventListener("open", handleOpen);
-          socket.removeEventListener("error", handleOpenError);
-          resolve();
-        };
-        const handleOpenError = () => {
-          socket.removeEventListener("open", handleOpen);
-          socket.removeEventListener("error", handleOpenError);
-          reject(new Error("AssemblyAI streaming socket failed to open."));
-        };
-        socket.addEventListener("open", handleOpen);
-        socket.addEventListener("error", handleOpenError);
-      });
+      await withTimeout(
+        new Promise<void>((resolve, reject) => {
+          const handleOpen = () => {
+            socket.removeEventListener("open", handleOpen);
+            socket.removeEventListener("error", handleOpenError);
+            resolve();
+          };
+          const handleOpenError = () => {
+            socket.removeEventListener("open", handleOpen);
+            socket.removeEventListener("error", handleOpenError);
+            reject(new Error("AssemblyAI streaming socket failed to open."));
+          };
+          socket.addEventListener("open", handleOpen);
+          socket.addEventListener("error", handleOpenError);
+        }),
+        STREAM_OPEN_TIMEOUT_MS,
+        "AssemblyAI streaming socket timed out.",
+      );
 
       socket.onerror = () =>
         session.rejectTranscript(
@@ -173,8 +192,16 @@ export function useAssemblyAIStreaming() {
     }
 
     session.isStopping = true;
-    session.processor.disconnect();
-    session.mediaSource.disconnect();
+    try {
+      session.processor.disconnect();
+    } catch {
+      // The processor may not have connected if the user released quickly.
+    }
+    try {
+      session.mediaSource.disconnect();
+    } catch {
+      // The source may not have connected if the user released quickly.
+    }
     await session.audioContext.close();
 
     if (session.socket.readyState === WebSocket.OPEN) {
@@ -183,7 +210,7 @@ export function useAssemblyAIStreaming() {
     session.terminationTimer = window.setTimeout(() => {
       session.resolveTranscript(session.latestTranscript);
       session.socket.close();
-    }, 1_200);
+    }, STREAM_STOP_TIMEOUT_MS);
 
     try {
       return (await session.transcriptPromise).trim();
@@ -218,4 +245,27 @@ export function useAssemblyAIStreaming() {
     stopStreamingTranscription,
     warmStreamingTranscription,
   };
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  errorMessage: string,
+): Promise<T> {
+  let timeoutId: number | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = window.setTimeout(
+          () => reject(new Error(errorMessage)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
+  }
 }

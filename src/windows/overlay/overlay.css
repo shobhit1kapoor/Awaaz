@@ -28,18 +28,8 @@ body,
   display: flex;
   align-items: center;
   gap: 12px;
-  transform: translate(-9px, -50%);
-  transition:
-    left 32ms linear,
-    top 32ms linear;
-}
-
-.blue-cursor {
-  width: 18px;
-  height: 18px;
-  border-radius: 999px;
-  background: #2f7cff;
-  box-shadow: 0 0 24px rgba(47, 124, 255, 0.8);
+  transform: translate(24px, 18px);
+  will-change: left, top;
 }
 
 .response-bubble {

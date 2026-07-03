@@ -18,13 +18,20 @@ fn open_windows_target_for_platform(kind: &str, query: &str) -> Result<OpenTarge
     use std::process::Command;
 
     let trimmed_query = query.trim();
-    if trimmed_query.is_empty() || trimmed_query.len() > 120 {
-        return Err("The target name must contain between 1 and 120 characters.".to_string());
+    if trimmed_query.is_empty() {
+        return Err("The target name cannot be empty.".to_string());
+    }
+    if kind == "open_url" {
+        if trimmed_query.len() > 2_000 {
+            return Err("URL is too long.".to_string());
+        }
+    } else if trimmed_query.len() > 120 {
+        return Err("The target name must contain 120 characters or fewer.".to_string());
     }
 
     if kind == "open_url" {
         let url = normalize_url(trimmed_query)?;
-        open_url(&url)?;
+        open_url_in_preferred_browser(&url)?;
         return Ok(OpenTargetResult {
             kind: kind.to_string(),
             query: trimmed_query.to_string(),
@@ -37,7 +44,7 @@ fn open_windows_target_for_platform(kind: &str, query: &str) -> Result<OpenTarge
             "https://www.google.com/search?q={}",
             percent_encode_query(trimmed_query)
         );
-        open_url(&url)?;
+        open_url_in_preferred_browser(&url)?;
         return Ok(OpenTargetResult {
             kind: kind.to_string(),
             query: trimmed_query.to_string(),
@@ -51,6 +58,24 @@ fn open_windows_target_for_platform(kind: &str, query: &str) -> Result<OpenTarge
             kind: kind.to_string(),
             query: trimmed_query.to_string(),
             opened_path: "active window".to_string(),
+        });
+    }
+
+    if kind == "open_app" && normalize_name(trimmed_query) == "spotify" {
+        open_shell_uri("spotify:")?;
+        return Ok(OpenTargetResult {
+            kind: kind.to_string(),
+            query: trimmed_query.to_string(),
+            opened_path: "spotify:".to_string(),
+        });
+    }
+
+    if kind == "open_app" && is_chrome_name(trimmed_query) {
+        open_chrome_default_profile(None)?;
+        return Ok(OpenTargetResult {
+            kind: kind.to_string(),
+            query: trimmed_query.to_string(),
+            opened_path: "Chrome Default profile".to_string(),
         });
     }
 
@@ -196,6 +221,82 @@ fn open_windows_target_for_platform(kind: &str, query: &str) -> Result<OpenTarge
             .spawn()
             .map_err(|error| format!("Could not open URL: {error}"))?;
         Ok(())
+    }
+
+    fn open_url_in_preferred_browser(url: &str) -> Result<(), String> {
+        if open_chrome_default_profile(Some(url)).is_ok() {
+            return Ok(());
+        }
+        open_url(url)
+    }
+
+    fn open_chrome_default_profile(url: Option<&str>) -> Result<(), String> {
+        let chrome_path = find_chrome_executable()
+            .ok_or_else(|| "Could not find Google Chrome on this Windows profile.".to_string())?;
+        let mut command = Command::new(chrome_path);
+        command.arg("--profile-directory=Default");
+        if let Some(url) = url {
+            command.arg(url);
+        }
+        command
+            .spawn()
+            .map_err(|error| format!("Could not open Chrome: {error}"))?;
+        Ok(())
+    }
+
+    fn find_chrome_executable() -> Option<PathBuf> {
+        let mut candidates = Vec::new();
+        if let Some(program_files) = std::env::var_os("ProgramFiles") {
+            candidates
+                .push(PathBuf::from(program_files).join("Google/Chrome/Application/chrome.exe"));
+        }
+        if let Some(program_files_x86) = std::env::var_os("ProgramFiles(x86)") {
+            candidates.push(
+                PathBuf::from(program_files_x86).join("Google/Chrome/Application/chrome.exe"),
+            );
+        }
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            candidates
+                .push(PathBuf::from(local_app_data).join("Google/Chrome/Application/chrome.exe"));
+        }
+        candidates.into_iter().find(|path| path.exists())
+    }
+
+    fn is_chrome_name(query: &str) -> bool {
+        matches!(
+            normalize_name(query).as_str(),
+            "chrome" | "google chrome" | "google"
+        )
+    }
+
+    fn open_shell_uri(uri: &str) -> Result<(), String> {
+        use windows::core::PCWSTR;
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+        let operation = wide_null("open");
+        let file = wide_null(uri);
+        let result = unsafe {
+            ShellExecuteW(
+                None,
+                PCWSTR(operation.as_ptr()),
+                PCWSTR(file.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        let code = result.0 as isize;
+        if code <= 32 {
+            return Err(format!(
+                "Could not open URI '{uri}': Windows ShellExecute returned code {code}."
+            ));
+        }
+        Ok(())
+    }
+
+    fn wide_null(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
     fn percent_encode_query(query: &str) -> String {

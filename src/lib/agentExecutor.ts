@@ -46,6 +46,9 @@ export async function executeAgentStep(step: AgentPlanStep): Promise<void> {
         kind: step.type,
         query: step.target,
       });
+      if (step.type === "open_app") {
+        await delay(2_500);
+      }
       return;
     case "web_search":
       await invoke("open_windows_target", {
@@ -64,6 +67,10 @@ export async function executeAgentStep(step: AgentPlanStep): Promise<void> {
         step: stepToExecutionPayload(step),
       });
   }
+}
+
+function delay(durationMs: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, durationMs));
 }
 
 export function stepToExecutionPayload(
@@ -100,6 +107,12 @@ export function stepToExecutionPayload(
       return { stepType: step.type, url: step.url };
     case "browser_snapshot":
       return { stepType: step.type };
+    case "spotify_play_first_result":
+      return { stepType: step.type };
+    case "spotify_like_first_result":
+      return { stepType: step.type };
+    case "word_create_document":
+      return { stepType: step.type, text: step.text };
     case "browser_click":
       return { stepType: step.type, selector: step.selector, text: step.text };
     case "browser_type":

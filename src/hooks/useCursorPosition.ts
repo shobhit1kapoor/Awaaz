@@ -16,35 +16,53 @@ export function useCursorPosition(): CursorPosition {
   useEffect(() => {
     let isMounted = true;
     let overlayOrigin = { x: 0, y: 0 };
-    let overlayScaleFactor = 1;
+    let overlayPixelsPerCssPixel = { x: 1, y: 1 };
     const overlayWindow = getCurrentWindow();
 
     const initializeOverlayGeometry = async () => {
-      const [position, scaleFactor] = await Promise.all([
+      const [position, size] = await Promise.all([
         overlayWindow.outerPosition(),
-        overlayWindow.scaleFactor(),
+        overlayWindow.outerSize(),
       ]);
       overlayOrigin = position;
-      overlayScaleFactor = scaleFactor;
+      overlayPixelsPerCssPixel = {
+        x: size.width / Math.max(window.innerWidth, 1),
+        y: size.height / Math.max(window.innerHeight, 1),
+      };
     };
     void initializeOverlayGeometry();
 
-    const cursorPollingTimer = window.setInterval(() => {
-      void invoke<[number, number]>("get_cursor_pos").then(
-        ([absoluteX, absoluteY]) => {
+    const geometryRefreshTimer = window.setInterval(() => {
+      void initializeOverlayGeometry();
+    }, 1_000);
+    window.addEventListener("resize", initializeOverlayGeometry);
+
+    let cursorPollingTimer: number | null = null;
+    const pollCursor = () => {
+      void invoke<[number, number]>("get_cursor_pos")
+        .then(([absoluteX, absoluteY]) => {
           if (isMounted) {
             setCursorPosition({
-              x: (absoluteX - overlayOrigin.x) / overlayScaleFactor,
-              y: (absoluteY - overlayOrigin.y) / overlayScaleFactor,
+              x: (absoluteX - overlayOrigin.x) / overlayPixelsPerCssPixel.x,
+              y: (absoluteY - overlayOrigin.y) / overlayPixelsPerCssPixel.y,
             });
           }
-        },
-      );
-    }, 33);
+        })
+        .finally(() => {
+          if (isMounted) {
+            cursorPollingTimer = window.setTimeout(pollCursor, 8);
+          }
+        });
+    };
+    pollCursor();
 
     return () => {
       isMounted = false;
-      window.clearInterval(cursorPollingTimer);
+      if (cursorPollingTimer !== null) {
+        window.clearTimeout(cursorPollingTimer);
+      }
+      window.clearInterval(geometryRefreshTimer);
+      window.removeEventListener("resize", initializeOverlayGeometry);
     };
   }, []);
 

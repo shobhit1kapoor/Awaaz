@@ -155,10 +155,17 @@ export function useVoiceController(): void {
         if (shouldPlanRequest(cleanTranscript)) {
           const agentPlan = await createAgentPlan(cleanTranscript);
           const actionErrors = await executeAgentPlan(agentPlan);
+          if (actionErrors.length > 0) {
+            console.warn("Awaaz agent plan failed", {
+              transcript: cleanTranscript,
+              goal: agentPlan.goal,
+              errors: actionErrors,
+            });
+          }
           const displayedResponse =
             actionErrors.length === 0
               ? agentPlan.response
-              : `I hit a snag: ${actionErrors.join(" ")}`;
+              : friendlyActionFailure(cleanTranscript);
           mutateAndPublish(() => {
             const appState = useAppStore.getState();
             appState.setResponseText(displayedResponse);
@@ -177,10 +184,17 @@ export function useVoiceController(): void {
         const inferredAction = inferExplicitWindowsAction(cleanTranscript);
         if (inferredAction) {
           const actionErrors = await executeWindowsActions([inferredAction]);
+          if (actionErrors.length > 0) {
+            console.warn("Awaaz Windows action failed", {
+              transcript: cleanTranscript,
+              action: inferredAction,
+              errors: actionErrors,
+            });
+          }
           const displayedResponse =
             actionErrors.length === 0
               ? actionResponseFor(inferredAction)
-              : `I couldn't complete that action: ${actionErrors.join(" ")}`;
+              : friendlyActionFailure(cleanTranscript);
           mutateAndPublish(() => {
             const appState = useAppStore.getState();
             appState.setResponseText(displayedResponse);
@@ -267,9 +281,10 @@ export function useVoiceController(): void {
           appState.setVoiceState("idle");
         });
       } catch (error) {
+        console.error("Awaaz request failed", error);
         mutateAndPublish(() => {
           const appState = useAppStore.getState();
-          appState.setErrorMessage(String(error));
+          appState.setErrorMessage("I couldn't finish that. Try once more.");
           appState.setVoiceState("idle");
         });
       } finally {
@@ -415,10 +430,11 @@ export function useVoiceController(): void {
         );
       });
     } catch (error) {
+      console.error("Awaaz push-to-talk start failed", error);
       isListeningRef.current = false;
       mutateAndPublish(() => {
         const appState = useAppStore.getState();
-        appState.setErrorMessage(String(error));
+        appState.setErrorMessage("I couldn't start listening.");
         appState.setVoiceState("idle");
       });
       await resumeVadIfEnabled().catch(() => undefined);
@@ -436,9 +452,10 @@ export function useVoiceController(): void {
       const screenshotPromise = invoke<ScreenCapturePayload>("capture_screen");
       await processTranscript(await transcriptPromise, screenshotPromise);
     } catch (error) {
+      console.error("Awaaz push-to-talk stop failed", error);
       mutateAndPublish(() => {
         const appState = useAppStore.getState();
-        appState.setErrorMessage(String(error));
+        appState.setErrorMessage("I couldn't process that. Try once more.");
         appState.setVoiceState("idle");
       });
       await resumeVadIfEnabled().catch(() => undefined);
@@ -501,6 +518,20 @@ export function useVoiceController(): void {
     stopVad,
     warmStreamingTranscription,
   ]);
+}
+
+function friendlyActionFailure(transcript: string): string {
+  const normalizedTranscript = transcript.toLowerCase();
+  if (normalizedTranscript.includes("spotify")) {
+    return "I couldn't finish that in Spotify. Try once more with Spotify visible.";
+  }
+  if (
+    normalizedTranscript.includes("chrome") ||
+    normalizedTranscript.includes("search")
+  ) {
+    return "I couldn't finish that search. Try once more.";
+  }
+  return "I couldn't finish that. Try once more.";
 }
 
 function actionResponseFor(action: WindowsAction): string {

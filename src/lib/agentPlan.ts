@@ -19,7 +19,10 @@ export type AgentPlanStep =
   | { type: "browser_snapshot" }
   | { type: "browser_click"; selector?: string; text?: string }
   | { type: "browser_type"; selector?: string; text: string }
-  | { type: "browser_wait"; durationMs: number };
+  | { type: "browser_wait"; durationMs: number }
+  | { type: "spotify_play_first_result" }
+  | { type: "spotify_like_first_result" }
+  | { type: "word_create_document"; text: string };
 
 export interface AgentPlan {
   goal: string;
@@ -38,12 +41,151 @@ export function shouldBlockAgenticRequest(transcript: string): boolean {
 
 export function shouldUseAgenticPlanner(transcript: string): boolean {
   const normalizedTranscript = transcript.trim().toLowerCase();
+  if (isGuidanceQuestion(normalizedTranscript)) {
+    return false;
+  }
+
   return (
     /\b(and then|then|after that)\b/.test(normalizedTranscript) ||
     /\b(play|pause|search in|click|press|choose|select|fill|go to|open .* and)\b/.test(
       normalizedTranscript,
     )
   );
+}
+
+export function createDeterministicAgentPlan(
+  transcript: string,
+): AgentPlan | null {
+  const browserSearch = extractBrowserSearchRequest(transcript);
+  if (browserSearch) {
+    return {
+      goal: `Search the web for ${browserSearch}`,
+      shouldExecute: true,
+      response: `Searching for ${browserSearch}.`,
+      steps: [{ type: "browser_open", url: googleSearchUrl(browserSearch) }],
+    };
+  }
+
+  const spotifyLikeTrack = extractSpotifyLikeRequest(transcript);
+  if (spotifyLikeTrack) {
+    return {
+      goal: `Add ${spotifyLikeTrack} to liked songs in Spotify`,
+      shouldExecute: true,
+      response: `Adding ${spotifyLikeTrack} to your liked songs.`,
+      steps: [
+        { type: "browser_open", url: spotifySearchUri(spotifyLikeTrack) },
+        {
+          type: "wait_for_window",
+          titleIncludes: "Spotify",
+          timeoutMs: 8_000,
+        },
+        { type: "wait_ms", durationMs: 1_200 },
+        { type: "spotify_like_first_result" },
+      ],
+    };
+  }
+
+  const spotifyTrack = extractSpotifyTrackRequest(transcript);
+  if (spotifyTrack) {
+    return {
+      goal: `Play ${spotifyTrack} in Spotify`,
+      shouldExecute: true,
+      response: `Playing ${spotifyTrack}.`,
+      steps: [
+        { type: "browser_open", url: spotifySearchUri(spotifyTrack) },
+        {
+          type: "wait_for_window",
+          titleIncludes: "Spotify",
+          timeoutMs: 8_000,
+        },
+        { type: "wait_ms", durationMs: 1_200 },
+        { type: "spotify_play_first_result" },
+      ],
+    };
+  }
+
+  return null;
+}
+
+function extractBrowserSearchRequest(transcript: string): string | null {
+  const normalizedTranscript = transcript.trim().replace(/\s+/g, " ");
+  const searchMatch =
+    normalizedTranscript.match(
+      /^(?:please\s+)?(?:open|launch|start)\s+(?:google\s+)?chrome\s+(?:and\s+)?(?:then\s+)?(?:search|google|look up|find)\s+(?:for\s+)?(.+?)[.!?]*$/i,
+    ) ??
+    normalizedTranscript.match(
+      /^(?:please\s+)?(?:search|google|look up|find)\s+(?:for\s+)?(.+?)\s+(?:in|on|with|using)\s+(?:google\s+)?chrome[.!?]*$/i,
+    );
+
+  const query = searchMatch?.[1]?.trim();
+  return query ? query.replace(/\s+(?:in|on)\s+chrome$/i, "").trim() : null;
+}
+
+function googleSearchUrl(query: string): string {
+  return `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+}
+
+function isGuidanceQuestion(normalizedTranscript: string): boolean {
+  return (
+    /\b(?:how do i|how to|what do i|what should i|where do i|where should i|where to|tell me where|show me where|guide me|help me|teach me|now what|next what|what next)\b/.test(
+      normalizedTranscript,
+    ) ||
+    /\b(?:figma|photoshop|gmail|outlook|chrome|app|website|screen|page)\b/.test(
+      normalizedTranscript,
+    ) &&
+      /\b(?:where|what|how|which|tell me|show me|guide|help|learn|learning|use)\b/.test(
+        normalizedTranscript,
+      )
+  );
+}
+
+export interface DocumentDraftRequest {
+  app: "word" | "google_docs";
+  topic: string;
+}
+
+export function extractDocumentDraftRequest(
+  transcript: string,
+): DocumentDraftRequest | null {
+  const normalizedTranscript = transcript.trim().replace(/\s+/g, " ");
+  const match = normalizedTranscript.match(
+    /^(?:please\s+)?(?:open|launch|start)\s+(word|microsoft word|google docs?|docs?)(?:\s+(?:and|then))?\s+(?:write|draft|create)\s+(?:a\s+)?(?:blog|article|post|document)(?:\s+(?:about|on)\s+(.+?))?[.!?]*$/i,
+  );
+  if (!match) {
+    return null;
+  }
+  const appName = match[1].toLowerCase();
+  const topic = match[2]?.trim() || "the requested topic";
+  return {
+    app: appName.includes("word") ? "word" : "google_docs",
+    topic,
+  };
+}
+
+export function createDocumentDraftPlan(
+  request: DocumentDraftRequest,
+  draft: string,
+): AgentPlan {
+  if (request.app === "word") {
+    return {
+      goal: `Write a blog about ${request.topic} in Microsoft Word`,
+      shouldExecute: true,
+      response: `I drafted a blog about ${request.topic} in Word.`,
+      steps: [{ type: "word_create_document", text: draft }],
+    };
+  }
+
+  return {
+    goal: `Write a blog about ${request.topic} in Google Docs`,
+    shouldExecute: true,
+    response: `I drafted a blog about ${request.topic} in Google Docs.`,
+    steps: [
+      { type: "browser_open", url: "https://docs.new" },
+      { type: "wait_for_window", titleIncludes: "Chrome", timeoutMs: 10_000 },
+      { type: "wait_ms", durationMs: 6_000 },
+      { type: "type_text", text: draft },
+    ],
+  };
 }
 
 export function parseAgentPlan(rawText: string): AgentPlan {
@@ -68,6 +210,53 @@ export function parseAgentPlan(rawText: string): AgentPlan {
     response: stringField(parsedValue.response, "Done."),
     steps,
   };
+}
+
+function extractSpotifyTrackRequest(transcript: string): string | null {
+  const normalizedTranscript = transcript.trim().replace(/\s+/g, " ");
+
+  const playMatch =
+    normalizedTranscript.match(
+      /(?:open\s+spotify\s+(?:and\s+)?)?play\s+(.+?)(?:\s+(?:on|in)\s+spotify)?[.!?]*$/i,
+    ) ??
+    normalizedTranscript.match(/spotify\s+(?:and\s+)?play\s+(.+?)[.!?]*$/i);
+  const rawTrack = playMatch?.[1]?.trim();
+  if (!rawTrack) {
+    return null;
+  }
+
+  const track = rawTrack
+    .replace(/^(?:the\s+)?(?:song|track)\s+/i, "")
+    .replace(/\s+on\s+spotify$/i, "")
+    .trim();
+  return track || null;
+}
+
+function extractSpotifyLikeRequest(transcript: string): string | null {
+  const normalizedTranscript = transcript.trim().replace(/\s+/g, " ");
+
+  const likeMatch =
+    normalizedTranscript.match(
+      /(?:open\s+spotify\s+(?:and\s+)?)?(?:add|save|like)\s+(.+?)\s+(?:to|in)\s+(?:my\s+)?(?:liked\s+songs|likes|library)(?:\s+(?:on|in)\s+spotify)?[.!?]*$/i,
+    ) ??
+    normalizedTranscript.match(
+      /spotify\s+(?:and\s+)?(?:add|save|like)\s+(.+?)\s+(?:to|in)\s+(?:my\s+)?(?:liked\s+songs|likes|library)[.!?]*$/i,
+    );
+
+  const rawTrack = likeMatch?.[1]?.trim();
+  if (!rawTrack) {
+    return null;
+  }
+
+  const track = rawTrack
+    .replace(/^(?:the\s+)?(?:song|track)\s+/i, "")
+    .replace(/\s+on\s+spotify$/i, "")
+    .trim();
+  return track || null;
+}
+
+function spotifySearchUri(track: string): string {
+  return `spotify:search:${encodeURIComponent(track)}`;
 }
 
 function parseAgentPlanStep(stepValue: unknown): AgentPlanStep | null {
@@ -134,6 +323,14 @@ function parseAgentPlanStep(stepValue: unknown): AgentPlanStep | null {
         : null;
     case "browser_snapshot":
       return { type: "browser_snapshot" };
+    case "spotify_play_first_result":
+      return { type: "spotify_play_first_result" };
+    case "spotify_like_first_result":
+      return { type: "spotify_like_first_result" };
+    case "word_create_document":
+      return stringField(stepValue.text, "")
+        ? { type: "word_create_document", text: stringField(stepValue.text, "") }
+        : null;
     case "browser_click":
       return {
         type: "browser_click",

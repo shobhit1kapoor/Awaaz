@@ -1,5 +1,11 @@
 import type { ConversationMessage } from "../store/appStore";
-import { parseAgentPlan, type AgentPlan } from "./agentPlan";
+import {
+  createDocumentDraftPlan,
+  createDeterministicAgentPlan,
+  extractDocumentDraftRequest,
+  parseAgentPlan,
+  type AgentPlan,
+} from "./agentPlan";
 
 export interface ScreenCapturePayload {
   base64: string;
@@ -54,6 +60,12 @@ x and y are pixel coordinates of the element on screen0 (primary monitor).
 Only use POINT tags when you're referencing something clearly visible and locatable on screen.
 Never include POINT tags for abstract concepts.
 
+If the user asks how to use the current app, where to click, what to do next, or asks for help while learning Figma, Photoshop, Chrome, Gmail, Outlook, or another visible app:
+- Do not emit an ACTION tag.
+- Look at the screenshot and give one clear next step.
+- Mention visible labels/icons and include a POINT tag for the exact target when possible.
+- If the screen is not enough, ask them to open the needed page/app first.
+
 When the user explicitly asks for one of these actions, append exactly one action tag:
 [ACTION:open_app:Application Name]
 [ACTION:open_folder:Folder Name]
@@ -88,12 +100,17 @@ Plan safe UI actions using only these tools:
 - browser_click selector text
 - browser_type selector text
 - browser_wait durationMs
+- spotify_play_first_result
+- spotify_like_first_result
+- word_create_document text
 
 Rules:
 - Do not ask for confirmation for safe allowlisted actions.
 - Do not plan purchases, deletes, payments, password/PIN/OTP/security-code entry, form submission, or sending messages.
 - Prefer app-agnostic UI Automation steps for desktop apps.
 - Prefer browser_* steps for websites.
+- For Spotify song requests, prefer the deterministic Spotify tools when available.
+- Do not plan when the user is asking for guidance, "where do I click", "how do I", "now what", or learning help. Those should be answered from the screenshot.
 - Keep plans under 12 steps.
 - Use response as the short thing Awaaz should say after executing.
 
@@ -226,6 +243,17 @@ export async function fetchTextToSpeechAudio(
 }
 
 export async function createAgentPlan(transcript: string): Promise<AgentPlan> {
+  const deterministicPlan = createDeterministicAgentPlan(transcript);
+  if (deterministicPlan) {
+    return deterministicPlan;
+  }
+
+  const documentDraftRequest = extractDocumentDraftRequest(transcript);
+  if (documentDraftRequest) {
+    const draft = await generateDocumentDraft(documentDraftRequest.topic);
+    return createDocumentDraftPlan(documentDraftRequest, draft);
+  }
+
   const response = await fetch(`${getWorkerUrl()}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -247,6 +275,36 @@ export async function createAgentPlan(transcript: string): Promise<AgentPlan> {
 
   const responseText = await response.text();
   return parseAgentPlan(extractChatContent(responseText));
+}
+
+async function generateDocumentDraft(topic: string): Promise<string> {
+  const response = await fetch(`${getWorkerUrl()}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: defaultChatModel,
+      max_tokens: 900,
+      temperature: 0.4,
+      stream: false,
+      messages: [
+        {
+          role: "system",
+          content:
+            "Write clean, useful document drafts for a voice assistant. Return only the draft text. Use a title, short introduction, 3-5 concise sections, and a closing paragraph. No markdown fences.",
+        },
+        {
+          role: "user",
+          content: `Write a blog about ${topic}.`,
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Document draft failed: ${await response.text()}`);
+  }
+
+  return extractChatContent(await response.text()).trim();
 }
 
 function extractChatContent(responseText: string): string {

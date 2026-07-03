@@ -9,6 +9,74 @@ pub async fn move_cursor_to(x: i32, y: i32, duration_ms: u64) -> Result<(), Stri
 }
 
 #[cfg(target_os = "windows")]
+pub fn install_awaaz_system_cursor() -> Result<(), String> {
+    use std::path::PathBuf;
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        LoadImageW, SetSystemCursor, HCURSOR, IMAGE_CURSOR, LR_DEFAULTSIZE, LR_LOADFROMFILE,
+        OCR_NORMAL,
+    };
+
+    const AWAAZ_CURSOR_BYTES: &[u8] = include_bytes!("../../icons/awaaz-cursor.cur");
+
+    fn materialize_cursor_file(cursor_bytes: &[u8]) -> Result<PathBuf, String> {
+        let cursor_path = std::env::temp_dir().join("awaaz-cursor.cur");
+        std::fs::write(&cursor_path, cursor_bytes)
+            .map_err(|error| format!("Could not write Awaaz cursor file: {error}"))?;
+        Ok(cursor_path)
+    }
+
+    restore_system_cursors()?;
+    let cursor_path = materialize_cursor_file(AWAAZ_CURSOR_BYTES)?;
+    let cursor_path_wide = wide_null(&cursor_path.to_string_lossy());
+
+    unsafe {
+        let cursor_handle = LoadImageW(
+            None,
+            PCWSTR(cursor_path_wide.as_ptr()),
+            IMAGE_CURSOR,
+            0,
+            0,
+            LR_LOADFROMFILE | LR_DEFAULTSIZE,
+        )
+        .map_err(|error| format!("Could not load Awaaz cursor: {error}"))?;
+
+        SetSystemCursor(HCURSOR(cursor_handle.0), OCR_NORMAL)
+            .map_err(|error| format!("Could not install Awaaz cursor: {error}"))?;
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn install_awaaz_system_cursor() -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+pub fn restore_system_cursors() -> Result<(), String> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SystemParametersInfoW, SPI_SETCURSORS, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    };
+
+    unsafe {
+        SystemParametersInfoW(
+            SPI_SETCURSORS,
+            0,
+            None,
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+        .map_err(|error| format!("Could not restore system cursors: {error}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn restore_system_cursors() -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
 fn get_cursor_pos_for_platform() -> Result<(i32, i32), String> {
     use windows::Win32::Foundation::POINT;
     use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
@@ -54,4 +122,9 @@ async fn move_cursor_to_for_platform(x: i32, y: i32, duration_ms: u64) -> Result
 #[cfg(not(target_os = "windows"))]
 async fn move_cursor_to_for_platform(_x: i32, _y: i32, _duration_ms: u64) -> Result<(), String> {
     Err("Moving the system cursor is only available on Windows.".to_string())
+}
+
+#[cfg(target_os = "windows")]
+fn wide_null(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
 }

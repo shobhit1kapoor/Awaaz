@@ -59,11 +59,55 @@ describe("inferExplicitWindowsAction", () => {
     });
   });
 
+  it("routes Chrome search phrasing to a clean web search query", () => {
+    expect(
+      inferExplicitWindowsAction("Search Kanye West in Chrome."),
+    ).toMatchObject({
+      kind: "web_search",
+      target: "Kanye West",
+    });
+    expect(
+      inferExplicitWindowsAction("Search Chrome for Kanye West."),
+    ).toMatchObject({
+      kind: "web_search",
+      target: "Kanye West",
+    });
+  });
+
   it("recognizes a URL open command", () => {
     expect(inferExplicitWindowsAction("Open localhost:3000.")).toMatchObject({
       kind: "open_url",
       target: "http://localhost:3000",
     });
+  });
+
+  it("opens Google web apps in the browser instead of as Windows apps", () => {
+    expect(inferExplicitWindowsAction("Open Gmail.")).toMatchObject({
+      kind: "open_url",
+      target: "https://mail.google.com/mail/u/0/#inbox",
+    });
+    expect(inferExplicitWindowsAction("Open Gmail on Chrome.")).toMatchObject({
+      kind: "open_url",
+      target: "https://mail.google.com/mail/u/0/#inbox",
+    });
+    expect(inferExplicitWindowsAction("Open Google Calendar.")).toMatchObject({
+      kind: "open_url",
+      target: "https://calendar.google.com/calendar/u/0/r",
+    });
+  });
+
+  it("creates a prefilled Google Calendar event URL", () => {
+    const action = inferExplicitWindowsAction(
+      "Add dentist appointment to my calendar tomorrow at 3 pm.",
+    );
+    expect(action).toMatchObject({
+      kind: "open_url",
+    });
+    expect(action?.target).toContain(
+      "https://calendar.google.com/calendar/render?",
+    );
+    expect(action?.target).toContain("text=dentist+appointment");
+    expect(action?.target).toContain("dates=");
   });
 
   it("recognizes an explicit typing command", () => {

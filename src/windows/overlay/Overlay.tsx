@@ -5,7 +5,6 @@ import { useVoiceController } from "../../hooks/useVoiceController";
 import { useAppStore } from "../../store/appStore";
 import { parsePointTags } from "../../lib/pointParser";
 import { AudioWaveform } from "./AudioWaveform";
-import { BlueCursor } from "./BlueCursor";
 import { PointerAnimation } from "./PointerAnimation";
 import { ResponseBubble } from "./ResponseBubble";
 import "./overlay.css";
@@ -39,7 +38,6 @@ export function Overlay() {
         className="cursor-cluster"
         style={{ left: cursorPosition.x, top: cursorPosition.y }}
       >
-        <BlueCursor />
         {voiceState === "listening" ? <AudioWaveform /> : null}
         {voiceState === "processing" ? (
           <div className="processing-spinner" />

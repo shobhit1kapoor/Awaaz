@@ -12,6 +12,9 @@ pub fn run() {
         .setup(|app| {
             tray::setup_tray(app)?;
             hotkey::setup_global_shortcut(app)?;
+            if let Err(error) = cursor::install_awaaz_system_cursor() {
+                eprintln!("Could not install Awaaz cursor: {error}");
+            }
             if let Some(overlay_window) = app.get_webview_window("overlay") {
                 window::configure_overlay_window(&overlay_window)?;
                 window::make_overlay_click_through(overlay_window)?;
@@ -27,6 +30,14 @@ pub fn run() {
             screen::capture_screen,
             window::make_overlay_click_through
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app_handle, event| {
+            if matches!(
+                event,
+                tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }
+            ) {
+                let _ = cursor::restore_system_cursors();
+            }
+        });
 }

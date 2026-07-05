@@ -1,4 +1,5 @@
 import type { ConversationMessage } from "../store/appStore";
+import type { AgentSession } from "../store/agentSessionStore";
 import {
   createDocumentDraftPlan,
   createDeterministicAgentPlan,
@@ -6,6 +7,8 @@ import {
   parseAgentPlan,
   type AgentPlan,
 } from "./agentPlan";
+import type { AgentObservation } from "./agentObservation";
+import { buildObservationSummary, type CoachStepPlan } from "./coachSession";
 
 export interface ScreenCapturePayload {
   base64: string;
@@ -116,6 +119,21 @@ Rules:
 
 JSON shape:
 {"goal":"...","shouldExecute":true,"response":"...","steps":[{"type":"open_app","target":"Spotify"}]}`;
+
+const COACH_STEP_SYSTEM_PROMPT = `You are Awaaz coach mode, a low-latency screen tutor.
+Return only compact JSON. No markdown. No commentary.
+
+Your job:
+- Remember the user's goal.
+- Use the current screenshot and observation.
+- Give exactly one next step.
+- Prefer guiding the user instead of doing the action.
+- If there is a visible target, include target coordinates relative to the screenshot monitor.
+- Keep instruction under 18 words.
+- Continue until the goal is complete.
+
+JSON shape:
+{"instruction":"Click Select Subject.","target":{"x":123,"y":456,"label":"Select Subject","screenIndex":0},"expectedResult":"Selection appears.","memory":"User is learning background removal.","continueSession":true,"done":false}`;
 
 export function getWorkerUrl(): string {
   if (!workerUrl) {
@@ -277,6 +295,54 @@ export async function createAgentPlan(transcript: string): Promise<AgentPlan> {
   return parseAgentPlan(extractChatContent(responseText));
 }
 
+export async function createCoachStepPlan(
+  session: AgentSession,
+  transcript: string,
+  observation: AgentObservation,
+): Promise<CoachStepPlan> {
+  const response = await fetch(`${getWorkerUrl()}/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: defaultChatModel,
+      max_tokens: 450,
+      temperature: 0.1,
+      stream: false,
+      messages: [
+        { role: "system", content: COACH_STEP_SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: [
+                `Goal: ${session.goal}`,
+                `User said: ${transcript}`,
+                `Session steps so far: ${session.steps.length}`,
+                `Working memory: ${session.workingMemory.join(" | ") || "none"}`,
+                `Observation: ${buildObservationSummary(observation)}`,
+                "Return one next guided step now.",
+              ].join("\n"),
+            },
+            {
+              type: "image_url",
+              image_url: {
+                url: `data:image/jpeg;base64,${observation.screenshot.base64}`,
+              },
+            },
+          ],
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Coach planner failed: ${await response.text()}`);
+  }
+
+  return parseCoachStepPlan(extractChatContent(await response.text()));
+}
+
 async function generateDocumentDraft(topic: string): Promise<string> {
   const response = await fetch(`${getWorkerUrl()}/chat`, {
     method: "POST",
@@ -324,4 +390,76 @@ function extractChatContent(responseText: string): string {
     throw new Error("Agent planner response did not include content.");
   }
   return content;
+}
+
+function parseCoachStepPlan(rawText: string): CoachStepPlan {
+  const parsedValue = JSON.parse(extractJsonObject(rawText)) as {
+    instruction?: unknown;
+    target?: unknown;
+    expectedResult?: unknown;
+    memory?: unknown;
+    continueSession?: unknown;
+    done?: unknown;
+  };
+
+  return {
+    instruction: stringField(
+      parsedValue.instruction,
+      "Try the next visible step.",
+    ),
+    target: parseCoachTarget(parsedValue.target),
+    expectedResult: stringField(parsedValue.expectedResult, ""),
+    memory:
+      typeof parsedValue.memory === "string" && parsedValue.memory.trim()
+        ? parsedValue.memory.trim()
+        : null,
+    continueSession: parsedValue.continueSession !== false,
+    done: parsedValue.done === true,
+  };
+}
+
+function parseCoachTarget(value: unknown): CoachStepPlan["target"] {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const x = numberField(value.x, Number.NaN);
+  const y = numberField(value.y, Number.NaN);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) {
+    return null;
+  }
+
+  return {
+    x,
+    y,
+    label: stringField(value.label, "Target").replace(/[:\]]/g, " ").trim(),
+    screenIndex: Math.max(0, Math.round(numberField(value.screenIndex, 0))),
+  };
+}
+
+function extractJsonObject(rawText: string): string {
+  const trimmedText = rawText.trim();
+  const fencedMatch = trimmedText.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fencedMatch) {
+    return fencedMatch[1].trim();
+  }
+
+  const firstBraceIndex = trimmedText.indexOf("{");
+  const lastBraceIndex = trimmedText.lastIndexOf("}");
+  if (firstBraceIndex === -1 || lastBraceIndex <= firstBraceIndex) {
+    throw new Error("Model did not return JSON.");
+  }
+  return trimmedText.slice(firstBraceIndex, lastBraceIndex + 1);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function stringField(value: unknown, fallback: string): string {
+  return typeof value === "string" ? value.trim().slice(0, 1_000) : fallback;
+}
+
+function numberField(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }

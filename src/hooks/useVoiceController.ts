@@ -23,10 +23,18 @@ import {
   shouldBlockAgenticRequest as shouldBlockPlannedRequest,
   shouldUseAgenticPlanner as shouldPlanRequest,
 } from "../lib/agentPlan";
+import { observeCurrentContext } from "../lib/agentObservation";
+import {
+  extractCoachGoal,
+  formatCoachResponse,
+  shouldContinueCoachSession,
+  shouldStartCoachSession,
+} from "../lib/coachSession";
 import { parsePointTags } from "../lib/pointParser";
 import { detectFirstCompleteSentence } from "../lib/sentenceDetector";
 import {
   createAgentPlan,
+  createCoachStepPlan,
   pingWorker,
   type ScreenCapturePayload,
 } from "../lib/workerClient";
@@ -35,6 +43,10 @@ import {
   type ClaudeModel,
   useAppStore,
 } from "../store/appStore";
+import {
+  getActiveAgentSession,
+  useAgentSessionStore,
+} from "../store/agentSessionStore";
 import { useClaudeSSE } from "./useClaudeSSE";
 import { useDeepgramStream } from "./useDeepgramStream";
 import { useAssemblyAIStreaming } from "./useAssemblyAIStreaming";
@@ -140,6 +152,7 @@ export function useVoiceController(): void {
 
         if (shouldBlockPlannedRequest(cleanTranscript)) {
           const displayedResponse = "I can't do that.";
+          useAgentSessionStore.getState().endSession();
           mutateAndPublish(() => {
             const appState = useAppStore.getState();
             appState.setResponseText(displayedResponse);
@@ -149,6 +162,77 @@ export function useVoiceController(): void {
             });
             appState.setVoiceState("idle");
           });
+          return;
+        }
+
+        const activeAgentSession = getActiveAgentSession();
+        if (
+          /\b(stop|cancel|end|quit)\b/i.test(cleanTranscript) &&
+          activeAgentSession
+        ) {
+          useAgentSessionStore.getState().endSession();
+          const displayedResponse = "Done.";
+          mutateAndPublish(() => {
+            const appState = useAppStore.getState();
+            appState.setResponseText(displayedResponse);
+            appState.appendConversationMessage({
+              role: "assistant",
+              text: displayedResponse,
+            });
+            appState.setVoiceState("idle");
+          });
+          return;
+        }
+
+        if (
+          shouldStartCoachSession(cleanTranscript) ||
+          shouldContinueCoachSession(cleanTranscript, activeAgentSession)
+        ) {
+          const session =
+            activeAgentSession?.mode === "coach"
+              ? activeAgentSession
+              : useAgentSessionStore
+                  .getState()
+                  .startSession("coach", extractCoachGoal(cleanTranscript));
+          useAgentSessionStore.getState().setSessionStatus("observing");
+          const observation = await observeCurrentContext(screenshotPromise);
+          useAgentSessionStore.getState().setSessionStatus("thinking");
+          const coachStep = await createCoachStepPlan(
+            session,
+            cleanTranscript,
+            observation,
+          );
+          if (coachStep.memory) {
+            useAgentSessionStore
+              .getState()
+              .appendWorkingMemory(coachStep.memory);
+          }
+          useAgentSessionStore.getState().appendSessionStep({
+            instruction: coachStep.instruction,
+            expectedResult: coachStep.expectedResult,
+            target: coachStep.target,
+            observedAt: observation.observedAt,
+          });
+          useAgentSessionStore
+            .getState()
+            .setSessionStatus(coachStep.done ? "idle" : "waiting");
+          if (coachStep.done || !coachStep.continueSession) {
+            useAgentSessionStore.getState().endSession();
+          }
+
+          const displayedResponse = formatCoachResponse(coachStep);
+          mutateAndPublish(() => {
+            const appState = useAppStore.getState();
+            appState.setResponseText(displayedResponse);
+            appState.appendConversationMessage({
+              role: "assistant",
+              text: parsePointTags(displayedResponse).cleanText,
+            });
+            appState.setVoiceState("responding");
+          });
+          void playTTS(parsePointTags(displayedResponse).cleanText);
+          await drainTTS();
+          mutateAndPublish(() => useAppStore.getState().setVoiceState("idle"));
           return;
         }
 

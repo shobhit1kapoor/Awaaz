@@ -2,7 +2,7 @@ mod commands;
 mod hotkey;
 mod tray;
 
-use commands::{action, agent, cursor, monitor, screen, window};
+use commands::{action, agent, context, cursor, monitor, screen, window};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -24,6 +24,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             action::open_windows_target,
             agent::execute_agent_step,
+            context::get_active_window_context,
             cursor::get_cursor_pos,
             cursor::move_cursor_to,
             monitor::list_monitors,

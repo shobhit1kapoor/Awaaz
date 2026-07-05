@@ -130,12 +130,12 @@ function isGuidanceQuestion(normalizedTranscript: string): boolean {
     /\b(?:how do i|how to|what do i|what should i|where do i|where should i|where to|tell me where|show me where|guide me|help me|teach me|now what|next what|what next)\b/.test(
       normalizedTranscript,
     ) ||
-    /\b(?:figma|photoshop|gmail|outlook|chrome|app|website|screen|page)\b/.test(
+    (/\b(?:figma|photoshop|gmail|outlook|chrome|app|website|screen|page)\b/.test(
       normalizedTranscript,
     ) &&
       /\b(?:where|what|how|which|tell me|show me|guide|help|learn|learning|use)\b/.test(
         normalizedTranscript,
-      )
+      ))
   );
 }
 
@@ -329,7 +329,10 @@ function parseAgentPlanStep(stepValue: unknown): AgentPlanStep | null {
       return { type: "spotify_like_first_result" };
     case "word_create_document":
       return stringField(stepValue.text, "")
-        ? { type: "word_create_document", text: stringField(stepValue.text, "") }
+        ? {
+            type: "word_create_document",
+            text: stringField(stepValue.text, ""),
+          }
         : null;
     case "browser_click":
       return {

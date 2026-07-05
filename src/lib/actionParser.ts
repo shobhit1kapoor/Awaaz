@@ -209,7 +209,10 @@ function googleCalendarTemplateUrl(title: string, datePhrase: string): string {
   });
   if (eventDate) {
     const endDate = new Date(eventDate.getTime() + 60 * 60 * 1000);
-    params.set("dates", `${formatGoogleDate(eventDate)}/${formatGoogleDate(endDate)}`);
+    params.set(
+      "dates",
+      `${formatGoogleDate(eventDate)}/${formatGoogleDate(endDate)}`,
+    );
   }
   return `https://calendar.google.com/calendar/render?${params.toString()}`;
 }
@@ -240,7 +243,9 @@ function parseSimpleCalendarDate(phrase: string): Date | null {
     }
   }
 
-  const timeMatch = normalizedPhrase.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i);
+  const timeMatch = normalizedPhrase.match(
+    /\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b/i,
+  );
   if (timeMatch) {
     let hour = Number(timeMatch[1]);
     const minute = Number(timeMatch[2] ?? "0");

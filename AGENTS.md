@@ -42,6 +42,9 @@ same [POINT] system. Replace macOS-only APIs with Windows equivalents. Do not in
 - Agentic app/browser actions use an allowlisted JSON plan in `agentPlan.ts`, execute through
   `agentExecutor.ts`, and reach native primitives through `commands/agent.rs`. Safe planned
   actions run without confirmation prompts; blocked high-impact intents fail closed.
+- Coach mode uses `agentSessionStore.ts`, `coachSession.ts`, and `agentObservation.ts` to keep a
+  persistent goal, observe the current app/screen, ask the model for one next guided step, and
+  continue across follow-up turns.
 
 ---
 
@@ -189,12 +192,15 @@ ai-buddy-windows/
 │   ├── lib/
 │   │   ├── agentPlan.ts             ← allowlisted JSON plan schema/parser for agentic actions
 │   │   ├── agentExecutor.ts         ← executes plan steps via Tauri commands
+│   │   ├── agentObservation.ts      ← unified screenshot/cursor/active-window observation
+│   │   ├── coachSession.ts          ← coach-mode routing, goal extraction, POINT formatting
 │   │   ├── workerClient.ts          ← all HTTP calls to Cloudflare Worker
 │   │   ├── pointParser.ts           ← regex + coord parser for [POINT] tags
 │   │   ├── sentenceDetector.ts      ← detect sentence boundaries for TTS chunking
 │   │   ├── pcmAudio.ts              ← downsample Float32 mic buffers to 16 kHz PCM16
 │   │   └── audioLevel.ts           ← RMS level from mic buffer for waveform
 │   ├── store/
+│   │   ├── agentSessionStore.ts     ← persistent coach/do session state
 │   │   └── appStore.ts              ← Zustand: voice state, conversation, settings
 │   ├── overlay.tsx                  ← entry point for overlay window
 │   ├── panel.tsx                    ← entry point for panel window
@@ -206,6 +212,7 @@ ai-buddy-windows/
 │   │   ├── lib.rs                   ← app builder: plugins, windows, command registration
 │   │   ├── commands/
 │   │   │   ├── agent.rs             ← agent plan primitives: wait/key/window/UIA/CDP scaffold
+│   │   │   ├── context.rs           ← active foreground window title/app observation
 │   │   │   ├── screen.rs            ← capture_screen() → base64 JPEG
 │   │   │   ├── cursor.rs            ← get_cursor_pos(), move_cursor_to(x,y,ms)
 │   │   │   ├── window.rs            ← setup_overlay_window(), click_through()

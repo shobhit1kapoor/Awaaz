@@ -16,6 +16,7 @@ export interface AppSnapshot {
   selectedModel: ClaudeModel;
   isClickyVisible: boolean;
   isVadEnabled: boolean;
+  isWakeWordEnabled: boolean;
   interimTranscript: string;
   responseText: string;
   conversationHistory: ConversationMessage[];
@@ -27,10 +28,12 @@ interface AppState extends AppSnapshot {
   setSelectedModel: (selectedModel: ClaudeModel) => void;
   setIsClickyVisible: (isClickyVisible: boolean) => void;
   setIsVadEnabled: (isVadEnabled: boolean) => void;
+  setIsWakeWordEnabled: (isWakeWordEnabled: boolean) => void;
   setInterimTranscript: (interimTranscript: string) => void;
   setResponseText: (responseText: string) => void;
   appendResponseText: (textDelta: string) => void;
   appendConversationMessage: (conversationMessage: ConversationMessage) => void;
+  clearConversation: () => void;
   setErrorMessage: (errorMessage: string | null) => void;
   hydrateSnapshot: (appSnapshot: AppSnapshot) => void;
 }
@@ -40,6 +43,7 @@ export const useAppStore = create<AppState>((set) => ({
   selectedModel: "meta/llama-4-maverick-17b-128e-instruct",
   isClickyVisible: true,
   isVadEnabled: false,
+  isWakeWordEnabled: true,
   interimTranscript: "",
   responseText: "",
   conversationHistory: [],
@@ -48,6 +52,7 @@ export const useAppStore = create<AppState>((set) => ({
   setSelectedModel: (selectedModel) => set({ selectedModel }),
   setIsClickyVisible: (isClickyVisible) => set({ isClickyVisible }),
   setIsVadEnabled: (isVadEnabled) => set({ isVadEnabled }),
+  setIsWakeWordEnabled: (isWakeWordEnabled) => set({ isWakeWordEnabled }),
   setInterimTranscript: (interimTranscript) => set({ interimTranscript }),
   setResponseText: (responseText) => set({ responseText }),
   appendResponseText: (textDelta) =>
@@ -61,8 +66,20 @@ export const useAppStore = create<AppState>((set) => ({
         conversationMessage,
       ],
     })),
+  clearConversation: () =>
+    set({
+      conversationHistory: [],
+      responseText: "",
+      interimTranscript: "",
+      errorMessage: null,
+    }),
   setErrorMessage: (errorMessage) => set({ errorMessage }),
-  hydrateSnapshot: (appSnapshot) => set(appSnapshot),
+  hydrateSnapshot: (appSnapshot) =>
+    set((currentState) => ({
+      ...appSnapshot,
+      isWakeWordEnabled:
+        appSnapshot.isWakeWordEnabled ?? currentState.isWakeWordEnabled,
+    })),
 }));
 
 export function getAppSnapshot(): AppSnapshot {
@@ -72,6 +89,7 @@ export function getAppSnapshot(): AppSnapshot {
     selectedModel: appState.selectedModel,
     isClickyVisible: appState.isClickyVisible,
     isVadEnabled: appState.isVadEnabled,
+    isWakeWordEnabled: appState.isWakeWordEnabled,
     interimTranscript: appState.interimTranscript,
     responseText: appState.responseText,
     conversationHistory: appState.conversationHistory,

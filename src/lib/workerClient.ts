@@ -1,5 +1,5 @@
 import type { ConversationMessage } from "../store/appStore";
-import type { AgentSession } from "../store/agentSessionStore";
+import type { AgentSession, StoredAgentTask } from "../store/agentSessionStore";
 import {
   createDocumentDraftPlan,
   createDeterministicAgentPlan,
@@ -8,7 +8,11 @@ import {
   type AgentPlan,
 } from "./agentPlan";
 import type { AgentObservation } from "./agentObservation";
-import { buildObservationSummary, type CoachStepPlan } from "./coachSession";
+import {
+  buildCoachProgressSummary,
+  buildObservationSummary,
+  type CoachStepPlan,
+} from "./coachSession";
 
 export interface ScreenCapturePayload {
   base64: string;
@@ -42,6 +46,9 @@ const workerUrl = import.meta.env.VITE_WORKER_URL;
 const defaultChatModel =
   import.meta.env.VITE_DEFAULT_CHAT_MODEL ??
   "meta/llama-4-maverick-17b-128e-instruct";
+const defaultVisionModel =
+  import.meta.env.VITE_DEFAULT_VISION_MODEL ?? "nvidia/nemotron-nano-12b-v2-vl";
+const CHAT_REQUEST_TIMEOUT_MS = 35_000;
 
 let cachedTranscriptionToken: {
   token: string;
@@ -56,17 +63,12 @@ Default to 1 or 2 speakable sentences unless the user asks for detail.
 Never say "certainly", "of course", "I'd be happy to", "as an AI", or "please note".
 Use direct language: "Opening it now.", "I see it.", "That error is from the missing bracket."
 
-When you reference something on screen that has a specific location, include a POINT tag immediately after mentioning it:
-[POINT:x:y:short_label:screen0]
-
-x and y are pixel coordinates of the element on screen0 (primary monitor).
-Only use POINT tags when you're referencing something clearly visible and locatable on screen.
-Never include POINT tags for abstract concepts.
+Do not include POINT tags in normal chat. Target highlights are reserved for structured coach mode only.
 
 If the user asks how to use the current app, where to click, what to do next, or asks for help while learning Figma, Photoshop, Chrome, Gmail, Outlook, or another visible app:
 - Do not emit an ACTION tag.
 - Look at the screenshot and give one clear next step.
-- Mention visible labels/icons and include a POINT tag for the exact target when possible.
+- Mention visible labels/icons and visible regions like top-left, left sidebar, center, or bottom toolbar.
 - If the screen is not enough, ask them to open the needed page/app first.
 
 When the user explicitly asks for one of these actions, append exactly one action tag:
@@ -128,12 +130,23 @@ Your job:
 - Use the current screenshot and observation.
 - Give exactly one next step.
 - Prefer guiding the user instead of doing the action.
-- If there is a visible target, include target coordinates relative to the screenshot monitor.
-- Keep instruction under 18 words.
+- If there is a visible target, include target coordinates relative to the resized screenshot image you receive.
+- Use only the latest screenshot for visible UI. Treat memory as progress, not proof of current UI.
+- If the previous expected result is not visible, give a recovery step instead of blindly continuing.
+- Keep instruction under 18 words and make it speakable.
+- Ground wording in what is visibly on screen. Never claim text exists unless you can see that text.
+- If a control is icon-only, describe its visible appearance and location: "Click the blue pencil icon on the left sidebar."
+- Include a rough region when useful: top-left, left sidebar, top-right, center panel, bottom toolbar.
+- Prefer visible labels/icons and landmarks over app-memory labels. Bad: "Click Compose" if the word Compose is not visible.
+- If the right control is not visible, tell the user what page/app/state to open first.
+- Set target to null if you are not at least medium-confident about the visible click location.
+- Never put a target in a generic corner just to satisfy the schema.
+- Do not mention hidden implementation details, JSON, screenshots, or confidence.
+- For risky actions like Send, Delete, Purchase, password, OTP, or payment, guide the user to review and ask before the final action.
 - Continue until the goal is complete.
 
 JSON shape:
-{"instruction":"Click Select Subject.","target":{"x":123,"y":456,"label":"Select Subject","screenIndex":0},"expectedResult":"Selection appears.","memory":"User is learning background removal.","continueSession":true,"done":false}`;
+{"instruction":"Click the blue pencil icon on the left sidebar.","target":{"x":123,"y":456,"label":"blue pencil icon","screenIndex":0},"expectedResult":"A compose window opens.","memory":"User is learning Gmail compose.","verifier":"A draft compose box is visible.","confidence":"high","continueSession":true,"done":false}`;
 
 export function getWorkerUrl(): string {
   if (!workerUrl) {
@@ -155,12 +168,14 @@ export async function pingWorker(): Promise<void> {
 export async function createChatCompletionStream(
   chatRequestPayload: ChatRequestPayload,
 ): Promise<Response> {
+  const requestTimeout = createAbortTimeout(CHAT_REQUEST_TIMEOUT_MS);
   const response = await fetch(`${getWorkerUrl()}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: requestTimeout.signal,
     body: JSON.stringify({
-      model: chatRequestPayload.model || defaultChatModel,
-      max_tokens: 512,
+      model: defaultVisionModel,
+      max_tokens: 260,
       stream: true,
       messages: [
         { role: "system", content: CLICKY_SYSTEM_PROMPT },
@@ -187,7 +202,7 @@ export async function createChatCompletionStream(
         },
       ],
     }),
-  });
+  }).finally(requestTimeout.clear);
 
   if (!response.ok) {
     throw new Error(`Chat request failed: ${await response.text()}`);
@@ -272,9 +287,11 @@ export async function createAgentPlan(transcript: string): Promise<AgentPlan> {
     return createDocumentDraftPlan(documentDraftRequest, draft);
   }
 
+  const requestTimeout = createAbortTimeout(CHAT_REQUEST_TIMEOUT_MS);
   const response = await fetch(`${getWorkerUrl()}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: requestTimeout.signal,
     body: JSON.stringify({
       model: defaultChatModel,
       max_tokens: 700,
@@ -285,7 +302,7 @@ export async function createAgentPlan(transcript: string): Promise<AgentPlan> {
         { role: "user", content: transcript },
       ],
     }),
-  });
+  }).finally(requestTimeout.clear);
 
   if (!response.ok) {
     throw new Error(`Agent planner failed: ${await response.text()}`);
@@ -299,13 +316,16 @@ export async function createCoachStepPlan(
   session: AgentSession,
   transcript: string,
   observation: AgentObservation,
+  storedTasks: StoredAgentTask[] = [],
 ): Promise<CoachStepPlan> {
+  const requestTimeout = createAbortTimeout(CHAT_REQUEST_TIMEOUT_MS);
   const response = await fetch(`${getWorkerUrl()}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: requestTimeout.signal,
     body: JSON.stringify({
-      model: defaultChatModel,
-      max_tokens: 450,
+      model: defaultVisionModel,
+      max_tokens: 260,
       temperature: 0.1,
       stream: false,
       messages: [
@@ -319,9 +339,18 @@ export async function createCoachStepPlan(
                 `Goal: ${session.goal}`,
                 `User said: ${transcript}`,
                 `Session steps so far: ${session.steps.length}`,
+                `Progress summary:\n${buildCoachProgressSummary(session)}`,
                 `Working memory: ${session.workingMemory.join(" | ") || "none"}`,
+                `Similar saved tasks: ${formatStoredTasksForPrompt(
+                  session.goal,
+                  storedTasks,
+                )}`,
                 `Observation: ${buildObservationSummary(observation)}`,
-                "Return one next guided step now.",
+                `Previous expected result: ${
+                  session.steps[session.steps.length - 1]?.expectedResult ||
+                  "none"
+                }`,
+                "Return one next guided step now. If no useful target is visible, say what to open or inspect next.",
               ].join("\n"),
             },
             {
@@ -334,7 +363,7 @@ export async function createCoachStepPlan(
         },
       ],
     }),
-  });
+  }).finally(requestTimeout.clear);
 
   if (!response.ok) {
     throw new Error(`Coach planner failed: ${await response.text()}`);
@@ -344,9 +373,11 @@ export async function createCoachStepPlan(
 }
 
 async function generateDocumentDraft(topic: string): Promise<string> {
+  const requestTimeout = createAbortTimeout(CHAT_REQUEST_TIMEOUT_MS);
   const response = await fetch(`${getWorkerUrl()}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: requestTimeout.signal,
     body: JSON.stringify({
       model: defaultChatModel,
       max_tokens: 900,
@@ -364,7 +395,7 @@ async function generateDocumentDraft(topic: string): Promise<string> {
         },
       ],
     }),
-  });
+  }).finally(requestTimeout.clear);
 
   if (!response.ok) {
     throw new Error(`Document draft failed: ${await response.text()}`);
@@ -398,6 +429,8 @@ function parseCoachStepPlan(rawText: string): CoachStepPlan {
     target?: unknown;
     expectedResult?: unknown;
     memory?: unknown;
+    verifier?: unknown;
+    confidence?: unknown;
     continueSession?: unknown;
     done?: unknown;
   };
@@ -413,9 +446,41 @@ function parseCoachStepPlan(rawText: string): CoachStepPlan {
       typeof parsedValue.memory === "string" && parsedValue.memory.trim()
         ? parsedValue.memory.trim()
         : null,
+    verifier: stringField(parsedValue.verifier, ""),
+    confidence: parseConfidence(parsedValue.confidence),
     continueSession: parsedValue.continueSession !== false,
     done: parsedValue.done === true,
   };
+}
+
+function formatStoredTasksForPrompt(
+  goal: string,
+  storedTasks: StoredAgentTask[],
+): string {
+  const normalizedGoal = goal.toLowerCase();
+  const matchingTasks = storedTasks
+    .filter((task) => {
+      const taskText = `${task.goal} ${task.appName ?? ""}`.toLowerCase();
+      return normalizedGoal
+        .split(/\s+/)
+        .filter((word) => word.length > 3)
+        .some((word) => taskText.includes(word));
+    })
+    .slice(0, 3);
+
+  if (matchingTasks.length === 0) {
+    return "none";
+  }
+
+  return matchingTasks
+    .map((task) => {
+      const steps = task.steps
+        .slice(0, 5)
+        .map((step) => step.instruction)
+        .join(" -> ");
+      return `${task.goal}${task.appName ? ` in ${task.appName}` : ""}: ${steps}`;
+    })
+    .join(" | ");
 }
 
 function parseCoachTarget(value: unknown): CoachStepPlan["target"] {
@@ -435,6 +500,12 @@ function parseCoachTarget(value: unknown): CoachStepPlan["target"] {
     label: stringField(value.label, "Target").replace(/[:\]]/g, " ").trim(),
     screenIndex: Math.max(0, Math.round(numberField(value.screenIndex, 0))),
   };
+}
+
+function parseConfidence(value: unknown): CoachStepPlan["confidence"] {
+  return value === "low" || value === "medium" || value === "high"
+    ? value
+    : "medium";
 }
 
 function extractJsonObject(rawText: string): string {
@@ -462,4 +533,19 @@ function stringField(value: unknown, fallback: string): string {
 
 function numberField(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function createAbortTimeout(timeoutMilliseconds: number): {
+  signal: AbortSignal;
+  clear: () => void;
+} {
+  const abortController = new AbortController();
+  const timeoutId = window.setTimeout(
+    () => abortController.abort(),
+    timeoutMilliseconds,
+  );
+  return {
+    signal: abortController.signal,
+    clear: () => window.clearTimeout(timeoutId),
+  };
 }

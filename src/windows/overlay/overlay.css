@@ -68,12 +68,41 @@ body,
   animation: spin 800ms infinite linear;
 }
 
+.point-target {
+  position: fixed;
+  z-index: 9999;
+  width: 1px;
+  height: 1px;
+  transform: translate3d(0, 0, 0);
+  pointer-events: none;
+}
+
+.point-target-ring {
+  position: absolute;
+  left: -24px;
+  top: -24px;
+  width: 48px;
+  height: 48px;
+  border: 3px solid rgba(47, 124, 255, 0.95);
+  border-radius: 999px;
+  box-shadow:
+    0 0 0 8px rgba(47, 124, 255, 0.12),
+    0 0 28px rgba(47, 124, 255, 0.55);
+  animation: target-pulse 950ms ease-out infinite;
+}
+
 .point-label {
+  position: absolute;
+  left: 18px;
+  top: -44px;
+  max-width: 260px;
   padding: 6px 10px;
   border-radius: 999px;
   color: white;
   background: rgba(47, 124, 255, 0.9);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.25);
   font-size: 12px;
+  white-space: nowrap;
 }
 
 @keyframes waveform-bounce {
@@ -89,5 +118,20 @@ body,
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes target-pulse {
+  0% {
+    transform: scale(0.72);
+    opacity: 0.95;
+  }
+  70% {
+    transform: scale(1.08);
+    opacity: 0.45;
+  }
+  100% {
+    transform: scale(1.16);
+    opacity: 0.08;
   }
 }

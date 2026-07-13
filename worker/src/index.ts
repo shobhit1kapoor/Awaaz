@@ -22,6 +22,7 @@ const TRANSCRIPTION_MAX_POLL_ATTEMPTS = 90;
 const MAX_CHAT_BODY_BYTES = 2_500_000;
 const MAX_AUDIO_UPLOAD_BYTES = 10_000_000;
 const MAX_TTS_TEXT_LENGTH = 1_000;
+const NVIDIA_CHAT_TIMEOUT_MS = 30_000;
 
 const defaultAllowedOrigins = [
   "http://localhost:1420",
@@ -121,18 +122,27 @@ async function handleNvidiaChat(
     stream?: boolean;
   }>();
 
-  const upstreamResponse = await fetch(`${NVIDIA_BASE_URL}/chat/completions`, {
-    method: "POST",
-    headers: nvidiaJsonHeaders(env),
-    body: JSON.stringify({
-      model:
-        requestBody.model ?? env.NVIDIA_CHAT_MODEL ?? DEFAULT_NVIDIA_CHAT_MODEL,
-      messages: requestBody.messages,
-      max_tokens: requestBody.max_tokens ?? 512,
-      temperature: requestBody.temperature ?? 0.2,
-      stream: requestBody.stream ?? true,
-    }),
-  });
+  const configuredModel = env.NVIDIA_CHAT_MODEL ?? DEFAULT_NVIDIA_CHAT_MODEL;
+  const requestedModel = requestBody.model ?? configuredModel;
+  const chatPayload = {
+    model: requestedModel,
+    messages: requestBody.messages,
+    max_tokens: requestBody.max_tokens ?? 512,
+    temperature: requestBody.temperature ?? 0.2,
+    stream: requestBody.stream ?? true,
+  };
+
+  let upstreamResponse = await fetchNvidiaChat(env, chatPayload);
+
+  if (upstreamResponse.status === 404 && requestedModel !== configuredModel) {
+    console.warn(
+      `[chat] Model '${requestedModel}' is unavailable. Retrying with '${configuredModel}'.`,
+    );
+    upstreamResponse = await fetchNvidiaChat(env, {
+      ...chatPayload,
+      model: configuredModel,
+    });
+  }
 
   return proxyUpstreamResponse(
     "/chat",
@@ -140,6 +150,45 @@ async function handleNvidiaChat(
     "text/event-stream",
     corsHeaders,
   );
+}
+
+async function fetchNvidiaChat(
+  env: Env,
+  chatPayload: {
+    model: string;
+    messages: unknown[];
+    max_tokens: number;
+    temperature: number;
+    stream: boolean;
+  },
+): Promise<Response> {
+  const abortController = new AbortController();
+  const timeoutId = setTimeout(
+    () => abortController.abort(),
+    NVIDIA_CHAT_TIMEOUT_MS,
+  );
+  try {
+    return await fetch(`${NVIDIA_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: nvidiaJsonHeaders(env),
+      body: JSON.stringify(chatPayload),
+      signal: abortController.signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      return jsonResponse(
+        {
+          error:
+            "The AI model took too long to respond. Try again with a shorter request.",
+        },
+        504,
+        {},
+      );
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 async function handleAssemblyAITranscribe(

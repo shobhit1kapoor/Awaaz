@@ -228,6 +228,41 @@ export function useAssemblyAIStreaming() {
     }
   }, []);
 
+  const cancelStreamingTranscription = useCallback(async () => {
+    const session = activeSessionRef.current;
+    if (!session) {
+      return;
+    }
+
+    session.isStopping = true;
+    if (session.terminationTimer !== null) {
+      window.clearTimeout(session.terminationTimer);
+    }
+    try {
+      session.processor.disconnect();
+    } catch {
+      // Best-effort cleanup.
+    }
+    try {
+      session.mediaSource.disconnect();
+    } catch {
+      // Best-effort cleanup.
+    }
+    try {
+      await session.audioContext.close();
+    } catch {
+      // Best-effort cleanup.
+    }
+    if (
+      session.socket.readyState === WebSocket.OPEN ||
+      session.socket.readyState === WebSocket.CONNECTING
+    ) {
+      session.socket.close();
+    }
+    session.resolveTranscript("");
+    activeSessionRef.current = null;
+  }, []);
+
   useEffect(
     () => () => {
       activeSessionRef.current?.socket.close();
@@ -241,6 +276,7 @@ export function useAssemblyAIStreaming() {
   );
 
   return {
+    cancelStreamingTranscription,
     startStreamingTranscription,
     stopStreamingTranscription,
     warmStreamingTranscription,

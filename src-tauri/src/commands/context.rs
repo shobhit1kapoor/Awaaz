@@ -17,7 +17,7 @@ fn get_active_window_context_for_platform() -> Result<ActiveWindowContext, Strin
     };
 
     let hwnd = unsafe { GetForegroundWindow() };
-    if hwnd.0 == 0 {
+    if hwnd.0.is_null() {
         return Ok(ActiveWindowContext {
             title: String::new(),
             app_name: None,

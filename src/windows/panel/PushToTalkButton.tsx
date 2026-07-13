@@ -22,7 +22,10 @@ export function PushToTalkButton() {
         onPointerUp={() => void emit(PUSH_TO_TALK_RELEASED_EVENT)}
         onPointerCancel={() => void emit(PUSH_TO_TALK_RELEASED_EVENT)}
       >
-        {isListening ? "Release to send" : "Hold Ctrl+Shift+Space to talk"}
+        <span>{isListening ? "Release to send" : "Hold Ctrl+Shift+Space"}</span>
+        {!isListening ? (
+          <small>or say “Hey Clicky / Hey ChatGPT” with Auto listen</small>
+        ) : null}
       </button>
       {errorMessage ? <p className="error-message">{errorMessage}</p> : null}
     </div>

@@ -19,7 +19,7 @@ export function ModelPicker() {
 
   return (
     <label className="field-label">
-      Model
+      <span>Model</span>
       <select
         value={selectedModel}
         onChange={(event) => {

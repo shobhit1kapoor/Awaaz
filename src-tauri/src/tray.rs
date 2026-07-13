@@ -9,9 +9,10 @@ pub fn setup_tray(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let tray_menu = Menu::with_items(app, &[&show_clicky_item, &settings_item, &quit_item])?;
 
-    TrayIconBuilder::new()
+    let mut tray_builder = TrayIconBuilder::new()
         .menu(&tray_menu)
         .show_menu_on_left_click(false)
+        .tooltip("Clicky")
         .on_tray_icon_event(|tray_icon, event| {
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
@@ -39,8 +40,13 @@ pub fn setup_tray(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             _ => {}
-        })
-        .build(app)?;
+        });
+
+    if let Some(icon) = app.default_window_icon().cloned() {
+        tray_builder = tray_builder.icon(icon);
+    }
+
+    tray_builder.build(app)?;
 
     Ok(())
 }

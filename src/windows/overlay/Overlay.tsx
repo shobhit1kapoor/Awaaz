@@ -47,8 +47,8 @@ export function Overlay() {
         ) : (
           <ResponseBubble text={errorMessage ?? parsedResponse.cleanText} />
         )}
-        <PointerAnimation activePoint={parsedResponse.points[0] ?? null} />
       </div>
+      <PointerAnimation activePoint={parsedResponse.points[0] ?? null} />
     </main>
   );
 }

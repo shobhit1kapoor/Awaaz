@@ -6,7 +6,11 @@ export function ConversationHistory() {
   );
 
   if (conversationHistory.length === 0) {
-    return <p className="empty-history">No conversation yet.</p>;
+    return (
+      <section className="conversation-history empty">
+        <p className="empty-history">No conversation yet.</p>
+      </section>
+    );
   }
 
   return (
